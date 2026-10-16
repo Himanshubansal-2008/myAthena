@@ -1,16 +1,30 @@
 {
   "name": "backend",
   "version": "1.0.0",
-  "description": "",
+  "description": "Athena Desktop Examination System - Backend API",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "node --watch index.js",
+    "start": "node index.js"
   },
-  "keywords": [],
+  "keywords": [
+    "athena",
+    "electron",
+    "exam",
+    "proctoring"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "express": "^5.3.0"
+    "@prisma/client": "^6.4.1",
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^5.3.0",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "devDependencies": {
+    "prisma": "^6.4.1"
   }
 }

@@ -1,12 +1,46 @@
-const express = require('express')
-const path = require('path')
+require("dotenv").config();
 
-const app = express()
+const express = require("express");
+const cors = require("cors");
 
-app.get('/', (req,res) => {
-    res.send("Route Working")
-})
+const app = express();
 
-app.listen(3000,() => {
-    console.log("Server running")
-})
+// CORS configuration to allow local Vite frontend and Electron
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (e.g. Electron file:// or curl) or localhost origins
+      if (!origin || origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
+        callback(null, true);
+      } else {
+        callback(null, true);
+      }
+    },
+    credentials: true,
+  })
+);
+
+app.use(express.json());
+
+// Routes
+app.use("/api/auth", require("./routes/auth"));
+app.use("/api/users", require("./routes/user"));
+
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "ok",
+    service: "Athena Examination System Backend",
+    port: process.env.PORT || 5050,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get("/", (req, res) => {
+  res.send("Athena Examination API is running");
+});
+
+const PORT = process.env.PORT || 5050;
+
+app.listen(PORT, () => {
+  console.log(`Athena API running on http://localhost:${PORT}`);
+});
