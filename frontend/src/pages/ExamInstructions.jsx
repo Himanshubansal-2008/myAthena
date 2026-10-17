@@ -369,9 +369,8 @@ export default function ExamInstructions() {
 
         {/* Section: Mandatory Candidate Acknowledgement Checkbox */}
         <section
-          className={`acknowledgement-container surface-card ${
-            acknowledged ? 'acknowledged-active' : ''
-          }`}
+          className={`acknowledgement-container surface-card ${acknowledged ? 'acknowledged-active' : ''
+            }`}
         >
           <div className="acknowledgement-layout">
             <div

@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, session } = require('electron');
 const path = require('path');
 
 let mainWindow = null;
@@ -16,6 +16,19 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: false,
     },
+  });
+
+  // Emit window blur and focus events for proctoring integrity monitoring
+  mainWindow.on('blur', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('window-blur');
+    }
+  });
+
+  mainWindow.on('focus', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('window-focus');
+    }
   });
 
   // Load local Vite dev server on configured port 5180
@@ -37,6 +50,24 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // Handle media permissions for camera access in Electron
+  if (session.defaultSession) {
+    session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+      if (permission === 'media') {
+        callback(true);
+      } else {
+        callback(false);
+      }
+    });
+
+    session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
+      if (permission === 'media') {
+        return true;
+      }
+      return false;
+    });
+  }
+
   createWindow();
 
   app.on('activate', () => {
@@ -51,3 +82,4 @@ app.on('window-all-closed', () => {
     app.quit();
   }
 });
+
