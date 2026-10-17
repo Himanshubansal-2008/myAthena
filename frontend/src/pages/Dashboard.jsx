@@ -26,6 +26,7 @@ export default function Dashboard() {
 
   const handleStartExam = (exam) => {
     setSelectedExam(null);
+    navigate('/instructions', { state: { exam } });
   };
 
   const examinations = [
@@ -240,7 +241,7 @@ export default function Dashboard() {
 
                         {isLive ? (
                           <button
-                            onClick={() => setSelectedExam(exam)}
+                            onClick={() => navigate('/instructions', { state: { exam } })}
                             className="btn btn-primary"
                             style={{ padding: '9px 18px' }}
                           >
