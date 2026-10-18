@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { useAuth } from '../context.jsx';
 import {
@@ -11,7 +11,9 @@ import {
   FileText,
   X,
   Send,
-  HelpCircle,
+  Flag,
+  RotateCcw,
+  Keyboard,
 } from 'lucide-react';
 import './pages.css';
 
@@ -38,9 +40,10 @@ export default function ExamRoom() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // In-Memory Navigation & Answer State
+  // In-Memory Navigation, Answer & Review Flag State
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [selectedAnswers, setSelectedAnswers] = useState({});
+  const [flaggedQuestions, setFlaggedQuestions] = useState({});
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
 
@@ -114,27 +117,33 @@ export default function ExamRoom() {
     };
   }, [examId, token]);
 
-  const [submitting, setSubmitting] = useState(false);
-  const [submissionResult, setSubmissionResult] = useState(null);
-
   // Handle single-option answer selection associated with the question ID
-  const handleSelectOption = (questionId, optionIndex) => {
+  const handleSelectOption = useCallback((questionId, optionIndex) => {
     setSelectedAnswers((prev) => ({
       ...prev,
       [questionId]: optionIndex,
     }));
+  }, []);
 
-    if (token) {
-      fetch(`${API_BASE_URL}/exams/${examId}/answer`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ questionId, selectedOption: optionIndex }),
-      }).catch((err) => console.warn('Failed to auto-save answer:', err));
-    }
-  };
+  // Handle Clear Answer for a question (or current question)
+  const handleClearAnswer = useCallback((questionId) => {
+    if (!questionId) return;
+    setSelectedAnswers((prev) => {
+      if (prev[questionId] === undefined) return prev;
+      const next = { ...prev };
+      delete next[questionId];
+      return next;
+    });
+  }, []);
+
+  // Handle Toggle Review Flag for a question (or current question)
+  const handleToggleFlag = useCallback((questionId) => {
+    if (!questionId) return;
+    setFlaggedQuestions((prev) => ({
+      ...prev,
+      [questionId]: !prev[questionId],
+    }));
+  }, []);
 
   // Safe navigation handlers
   const handlePrevQuestion = () => {
@@ -160,39 +169,75 @@ export default function ExamRoom() {
     setShowSubmitModal(false);
   };
 
-  const handleConfirmSubmit = async () => {
-    setSubmitting(true);
-    try {
-      const response = await fetch(`${API_BASE_URL}/exams/${examId}/submit`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ answers: selectedAnswers }),
-      });
-
-      const data = await response.json();
-      if (response.ok) {
-        setSubmissionResult(data.result);
-        setIsSubmitted(true);
-      } else {
-        alert(data.message || 'Failed to submit examination.');
-      }
-    } catch (err) {
-      console.error('Submission error:', err);
-      setIsSubmitted(true);
-    } finally {
-      setSubmitting(false);
-      setShowSubmitModal(false);
-    }
+  const handleConfirmSubmit = () => {
+    setIsSubmitted(true);
+    setShowSubmitModal(false);
   };
 
   // Derived state
   const totalQuestions = questions.length;
   const currentQuestion = questions[currentQuestionIndex] || null;
   const answeredCount = Object.keys(selectedAnswers).length;
+  const flaggedCount = Object.values(flaggedQuestions).filter(Boolean).length;
   const unansweredCount = Math.max(0, totalQuestions - answeredCount);
+
+  const isCurrentFlagged = currentQuestion ? Boolean(flaggedQuestions[currentQuestion.id]) : false;
+  const currentSelectedOption = currentQuestion ? selectedAnswers[currentQuestion.id] : undefined;
+
+  // Keyboard Shortcuts (A, B, C, D to select, X to clear)
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // 1. Ignore if confirmation modal or dialog is open
+      if (showSubmitModal) return;
+
+      // 2. Ignore if typing inside input, textarea, select, or contenteditable
+      const target = e.target;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      // 3. Ignore if modifier keys (Ctrl, Alt, Meta/Cmd) are pressed
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+
+      if (!currentQuestion) return;
+
+      const key = e.key.toUpperCase();
+
+      // Check A, B, C, D for option selection
+      const optionLetters = ['A', 'B', 'C', 'D'];
+      const optionIndex = optionLetters.indexOf(key);
+
+      if (optionIndex !== -1) {
+        if (
+          Array.isArray(currentQuestion.options) &&
+          optionIndex < currentQuestion.options.length
+        ) {
+          e.preventDefault();
+          handleSelectOption(currentQuestion.id, optionIndex);
+        }
+        return;
+      }
+
+      // Check X for clearing answer
+      if (key === 'X') {
+        if (selectedAnswers[currentQuestion.id] !== undefined) {
+          e.preventDefault();
+          handleClearAnswer(currentQuestion.id);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showSubmitModal, currentQuestion, selectedAnswers, handleSelectOption, handleClearAnswer]);
 
   // --- STATE 1: LOADING STATE ---
   if (loading) {
@@ -325,35 +370,6 @@ export default function ExamRoom() {
           <p style={{ fontSize: '13.5px', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: '20px' }}>
             Your assessment session for <strong>{exam?.title || 'this examination'}</strong> has concluded. You recorded responses for <strong>{answeredCount}</strong> of <strong>{totalQuestions}</strong> questions.
           </p>
-
-          {submissionResult && (
-            <div style={{
-              background: 'var(--bg-surface-elevated)',
-              border: '1px solid var(--border-default)',
-              borderRadius: 'var(--radius-sm)',
-              padding: '16px',
-              marginBottom: '20px',
-              textAlign: 'left',
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Official Score</span>
-                <span className="font-mono" style={{ fontSize: '16px', fontWeight: 700, color: submissionResult.passed ? '#34d399' : '#fbbf24' }}>
-                  {submissionResult.score} / {submissionResult.totalMarks} pts ({submissionResult.percentage}%)
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                <span>Evaluation Status</span>
-                <span style={{ fontWeight: 600, color: submissionResult.passed ? '#34d399' : '#fbbf24' }}>
-                  {submissionResult.passed ? 'PASSED (Satisfactory)' : 'FAILED (Under Passing Threshold)'}
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px', color: 'var(--text-muted)', marginTop: '6px' }}>
-                <span>Performance Breakdown</span>
-                <span>{submissionResult.correctCount} Correct • {submissionResult.wrongCount} Incorrect</span>
-              </div>
-            </div>
-          )}
-
           <button onClick={() => navigate('/dashboard')} className="btn btn-primary" style={{ margin: '0 auto' }}>
             <ArrowLeft size={15} />
             <span>Return to Dashboard</span>
@@ -365,7 +381,6 @@ export default function ExamRoom() {
 
   // --- STATE 5: LIVE EXAMINATION INTERFACE ---
   const optionsList = Array.isArray(currentQuestion.options) ? currentQuestion.options : [];
-  const currentSelectedOption = selectedAnswers[currentQuestion.id];
 
   return (
     <div className="exam-room-root">
@@ -408,32 +423,39 @@ export default function ExamRoom() {
           <div className="question-palette-card surface-card">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
               <h3 className="palette-title" style={{ margin: 0 }}>
-                Question Navigation
+                Question Palette
               </h3>
               <span className="font-mono" style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                {answeredCount}/{totalQuestions}
+                {answeredCount}/{totalQuestions} Answered
               </span>
             </div>
 
+            {/* Question Palette Numbered Buttons */}
             <div className="palette-grid">
               {questions.map((q, idx) => {
                 const isCurrent = idx === currentQuestionIndex;
                 const isAnswered = selectedAnswers[q.id] !== undefined;
+                const isFlagged = Boolean(flaggedQuestions[q.id]);
 
                 return (
                   <button
                     key={q.id}
                     id={`nav-question-${idx + 1}`}
+                    type="button"
                     onClick={() => handleJumpToQuestion(idx)}
-                    className={`palette-btn font-mono ${isCurrent ? 'current' : ''} ${isAnswered ? 'answered' : ''}`}
-                    title={`Question ${idx + 1}${isAnswered ? ' (Answered)' : ' (Unattempted)'}`}
+                    className={`palette-btn font-mono ${isCurrent ? 'current' : ''} ${isAnswered ? 'answered' : ''} ${isFlagged ? 'flagged' : ''}`}
+                    aria-current={isCurrent ? 'true' : undefined}
+                    aria-label={`Question ${idx + 1}: ${isAnswered ? 'Answered' : 'Unanswered'}${isFlagged ? ', Flagged for review' : ''}${isCurrent ? ' (Current)' : ''}`}
+                    title={`Question ${idx + 1}${isAnswered ? ' • Answered' : ' • Unanswered'}${isFlagged ? ' • Flagged for review' : ''}${isCurrent ? ' • Current' : ''}`}
                   >
-                    {idx + 1}
+                    <span>{idx + 1}</span>
+                    {isFlagged && <span className="palette-flag-corner" aria-hidden="true" />}
                   </button>
                 );
               })}
             </div>
 
+            {/* Compact Legend */}
             <div className="palette-legend">
               <div className="legend-item">
                 <span className="legend-dot current" />
@@ -444,8 +466,28 @@ export default function ExamRoom() {
                 <span>Answered ({answeredCount})</span>
               </div>
               <div className="legend-item">
+                <span className="legend-dot flagged" />
+                <span>Flagged for Review ({flaggedCount})</span>
+              </div>
+              <div className="legend-item">
                 <span className="legend-dot unanswered" />
-                <span>Unattempted ({unansweredCount})</span>
+                <span>Unanswered ({unansweredCount})</span>
+              </div>
+            </div>
+
+            {/* Keyboard Shortcuts Hint */}
+            <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid var(--border-subtle)', fontSize: '11px', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                <Keyboard size={13} />
+                <span>Keyboard Shortcuts</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>Select option</span>
+                <span className="font-mono" style={{ color: 'var(--text-primary)', fontWeight: 600 }}>A, B, C, D</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>Clear answer</span>
+                <span className="font-mono" style={{ color: 'var(--text-primary)', fontWeight: 600 }}>X</span>
               </div>
             </div>
           </div>
@@ -454,14 +496,59 @@ export default function ExamRoom() {
         {/* Center / Right: Question Content and Multiple Choice Options */}
         <div className="exam-question-area">
           <div className="surface-card question-display-card animate-fade-in">
-            {/* Question Header: Counter and Marks */}
+            {/* Question Header: Counter, Marks, and Action Controls */}
             <div className="question-header-row">
-              <span className="question-number-pill">
-                Question {currentQuestionIndex + 1} of {totalQuestions}
-              </span>
-              <span className="question-points-pill font-mono">
-                +{currentQuestion.marks || 1}.0 Point{currentQuestion.marks > 1 ? 's' : ''}
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <span className="question-number-pill">
+                  Question {currentQuestionIndex + 1} of {totalQuestions}
+                </span>
+                <span className="question-points-pill font-mono">
+                  +{currentQuestion.marks || 1}.0 Point{currentQuestion.marks > 1 ? 's' : ''}
+                </span>
+                {isCurrentFlagged && (
+                  <span className="question-flagged-tag font-mono">
+                    <Flag size={11} fill="#fbbf24" color="#fbbf24" />
+                    <span>FLAGGED</span>
+                  </span>
+                )}
+              </div>
+
+              {/* Action Controls: Flag for Review and Clear Answer */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  id="btn-flag-question"
+                  type="button"
+                  onClick={() => handleToggleFlag(currentQuestion.id)}
+                  className={`btn btn-sm ${isCurrentFlagged ? 'btn-flagged' : 'btn-secondary'}`}
+                  aria-pressed={isCurrentFlagged}
+                  title={isCurrentFlagged ? 'Remove review flag' : 'Flag this question for later review'}
+                >
+                  <Flag
+                    size={13}
+                    fill={isCurrentFlagged ? '#fbbf24' : 'none'}
+                    color={isCurrentFlagged ? '#fbbf24' : 'currentColor'}
+                  />
+                  <span>{isCurrentFlagged ? 'Flagged' : 'Flag for Review'}</span>
+                </button>
+
+                <button
+                  id="btn-clear-answer"
+                  type="button"
+                  onClick={() => handleClearAnswer(currentQuestion.id)}
+                  disabled={currentSelectedOption === undefined}
+                  className="btn btn-secondary btn-sm"
+                  aria-label="Clear selected answer"
+                  title={currentSelectedOption === undefined ? 'No answer selected' : 'Clear selected answer (Shortcut: X)'}
+                  style={{
+                    opacity: currentSelectedOption === undefined ? 0.45 : 1,
+                    cursor: currentSelectedOption === undefined ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  <RotateCcw size={13} />
+                  <span>Clear</span>
+                  <kbd className="shortcut-badge font-mono">X</kbd>
+                </button>
+              </div>
             </div>
 
             {/* Question Prompt Text */}
@@ -480,12 +567,17 @@ export default function ExamRoom() {
                     type="button"
                     onClick={() => handleSelectOption(currentQuestion.id, optIdx)}
                     className={`option-choice-btn ${isSelected ? 'selected' : ''}`}
+                    aria-label={`Option ${letter}: ${optionText}`}
+                    title={`Press ${letter} to select`}
                   >
                     <div className="option-letter-tag font-mono">{letter}</div>
                     <div className="option-radio-indicator">
                       {isSelected ? <Check size={13} strokeWidth={3} /> : null}
                     </div>
                     <span className="option-text">{optionText}</span>
+                    <kbd className="shortcut-badge font-mono" style={{ opacity: 0.6, fontSize: '10px' }}>
+                      {letter}
+                    </kbd>
                   </button>
                 );
               })}
@@ -573,7 +665,7 @@ export default function ExamRoom() {
               You have answered <strong>{answeredCount}</strong> out of <strong>{totalQuestions}</strong> questions in this assessment.
             </p>
 
-            {unansweredCount > 0 && (
+            {flaggedCount > 0 && (
               <div
                 style={{
                   display: 'flex',
@@ -584,6 +676,28 @@ export default function ExamRoom() {
                   background: 'rgba(245, 158, 11, 0.12)',
                   border: '1px solid rgba(245, 158, 11, 0.3)',
                   color: '#fbbf24',
+                  fontSize: '12.5px',
+                  marginBottom: '12px',
+                }}
+              >
+                <Flag size={15} flexShrink={0} fill="#fbbf24" />
+                <span>
+                  You have <strong>{flaggedCount}</strong> question{flaggedCount > 1 ? 's' : ''} marked for review.
+                </span>
+              </div>
+            )}
+
+            {unansweredCount > 0 && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                  padding: '10px 14px',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'rgba(239, 68, 68, 0.12)',
+                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                  color: '#f87171',
                   fontSize: '12.5px',
                   marginBottom: '16px',
                 }}
