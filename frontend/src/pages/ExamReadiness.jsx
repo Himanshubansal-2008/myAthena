@@ -19,8 +19,9 @@ import './pages.css';
 export default function ExamReadiness() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const exam = location.state?.exam;
+  const examId = exam?.id || 'cs-401';
 
   // --- Step 1: Camera State ---
   const [cameraActive, setCameraActive] = useState(false);
@@ -30,12 +31,13 @@ export default function ExamReadiness() {
   const cameraStreamRef = useRef(null);
   const videoRef = useRef(null);
 
-  // --- Priority 3: Backend API Connectivity State ---
+  // --- Priority 3: Backend API Connectivity & Attempt Status State ---
   const [backendStatus, setBackendStatus] = useState('checking'); // 'connected' | 'disconnected' | 'checking'
+  const [alreadySubmitted, setAlreadySubmitted] = useState(false);
 
   useEffect(() => {
     let isCancelled = false;
-    async function checkApi() {
+    async function checkApiAndAttempt() {
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 3500);
@@ -49,10 +51,41 @@ export default function ExamReadiness() {
           setBackendStatus('disconnected');
         }
       }
+
+      if (token) {
+        try {
+          const res = await fetch(`http://localhost:5050/api/exams/${examId}`, {
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+          });
+          const data = await res.json();
+          if (!isCancelled && !res.ok && data.code === 'ALREADY_SUBMITTED') {
+            setAlreadySubmitted(true);
+          }
+        } catch (e) {
+          console.warn('Attempt check failed in readiness:', e);
+        }
+      }
     }
-    checkApi();
-    return () => { isCancelled = true; };
-  }, []);
+    checkApiAndAttempt();
+    return () => {
+      isCancelled = true;
+    };
+  }, [token, examId]);
+
+  // Synchronize video element srcObject when camera becomes active
+  useEffect(() => {
+    if (cameraActive && cameraStreamRef.current && videoRef.current) {
+      if (videoRef.current.srcObject !== cameraStreamRef.current) {
+        videoRef.current.srcObject = cameraStreamRef.current;
+        videoRef.current.play().catch((err) => {
+          console.warn('Video preview play handled:', err);
+        });
+      }
+    }
+  }, [cameraActive]);
 
   // --- Step 2: Fullscreen State ---
   const [isFullscreen, setIsFullscreen] = useState(Boolean(document.fullscreenElement));
@@ -85,7 +118,7 @@ export default function ExamReadiness() {
         if (typeof full === 'boolean' && full) {
           setIsFullscreen(true);
         }
-      }).catch(() => {});
+      }).catch(() => { });
     }
 
     const onFullscreenChange = () => {
@@ -202,15 +235,15 @@ export default function ExamReadiness() {
         // Also sync DOM fullscreen state if available
         if (nextState) {
           if (document.documentElement.requestFullscreen) {
-            document.documentElement.requestFullscreen().catch(() => {});
+            document.documentElement.requestFullscreen().catch(() => { });
           } else if (document.documentElement.webkitRequestFullscreen) {
-            document.documentElement.webkitRequestFullscreen().catch(() => {});
+            document.documentElement.webkitRequestFullscreen().catch(() => { });
           }
         } else {
           if (document.exitFullscreen) {
-            document.exitFullscreen().catch(() => {});
+            document.exitFullscreen().catch(() => { });
           } else if (document.webkitExitFullscreen) {
-            document.webkitExitFullscreen().catch(() => {});
+            document.webkitExitFullscreen().catch(() => { });
           }
         }
         return;
@@ -241,20 +274,22 @@ export default function ExamReadiness() {
   const handleBackToInstructions = () => {
     stopCameraStream();
     if (window.electronAPI && typeof window.electronAPI.setFullscreen === 'function') {
-      window.electronAPI.setFullscreen(false).catch(() => {});
+      window.electronAPI.setFullscreen(false).catch(() => { });
     }
     if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
+      document.exitFullscreen().catch(() => { });
     }
     navigate('/instructions', { state: { exam } });
   };
 
-  // Readiness evaluation: both Camera and Fullscreen must be confirmed
-  const allReady = cameraActive && isFullscreen;
+  // Readiness evaluation: both Camera and Fullscreen must be confirmed, and exam cannot be already submitted
+  const allReady = cameraActive && isFullscreen && !alreadySubmitted;
   const completedCount = (cameraActive ? 1 : 0) + (isFullscreen ? 1 : 0);
 
   const handleStartExam = () => {
-    if (!allReady) return;
+    if (!allReady || alreadySubmitted) return;
+    // Explicitly release camera stream so ExamRoom can acquire webcam cleanly
+    stopCameraStream();
     // Navigate directly to the live examination room, preserving exam state
     navigate(`/exam/${exam?.id || 'cs-401'}`, { state: { exam } });
   };
@@ -355,6 +390,38 @@ export default function ExamReadiness() {
           <p className="readiness-exam-subtitle">
             Complete the 2 required pre-flight checks below to unlock the examination room.
           </p>
+
+          {alreadySubmitted && (
+            <div
+              style={{
+                marginTop: '16px',
+                padding: '14px 18px',
+                borderRadius: 'var(--radius-sm)',
+                background: 'rgba(239, 68, 68, 0.12)',
+                border: '1px solid rgba(239, 68, 68, 0.35)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
+                flexWrap: 'wrap',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <AlertTriangle size={18} color="#f87171" style={{ flexShrink: 0 }} />
+                <span style={{ fontSize: '13px', color: '#fca5a5', fontWeight: 500 }}>
+                  You have already completed and submitted this examination. Athena enforces a strict single-attempt policy.
+                </span>
+              </div>
+              <button
+                onClick={() => navigate('/dashboard', { state: { tab: 'history' } })}
+                className="btn btn-secondary btn-sm"
+                style={{ borderColor: 'rgba(239, 68, 68, 0.4)', color: '#fca5a5' }}
+              >
+                <ArrowLeft size={13} />
+                <span>View Results in Dashboard</span>
+              </button>
+            </div>
+          )}
         </section>
 
         {/* Overall Status Banner */}
@@ -423,7 +490,13 @@ export default function ExamReadiness() {
               <div className="readiness-camera-preview-box">
                 <div className="preview-video-container">
                   <video
-                    ref={videoRef}
+                    ref={(el) => {
+                      videoRef.current = el;
+                      if (el && cameraStreamRef.current && el.srcObject !== cameraStreamRef.current) {
+                        el.srcObject = cameraStreamRef.current;
+                        el.play().catch(() => {});
+                      }
+                    }}
                     autoPlay
                     playsInline
                     muted

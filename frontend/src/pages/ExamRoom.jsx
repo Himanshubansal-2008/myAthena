@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { useAuth } from '../context.jsx';
 import {
@@ -14,6 +14,7 @@ import {
   Flag,
   RotateCcw,
   Keyboard,
+  Clock,
 } from 'lucide-react';
 import './pages.css';
 
@@ -45,7 +46,81 @@ export default function ExamRoom() {
   const [selectedAnswers, setSelectedAnswers] = useState({});
   const [flaggedQuestions, setFlaggedQuestions] = useState({});
   const [showSubmitModal, setShowSubmitModal] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
+  const [isTimeout, setIsTimeout] = useState(false);
+  const [submissionResult, setSubmissionResult] = useState(null);
+
+  // Timer & Deadline State
+  const [deadlineTime, setDeadlineTime] = useState(null);
+  const [timeLeft, setTimeLeft] = useState(null);
+
+  // Safeguard Refs to prevent double submission or race conditions
+  const isSubmittingRef = useRef(false);
+  const isSubmittedRef = useRef(false);
+  const selectedAnswersRef = useRef(selectedAnswers);
+
+  useEffect(() => {
+    selectedAnswersRef.current = selectedAnswers;
+  }, [selectedAnswers]);
+
+  // Live Candidate Video PiP Stream
+  const [cameraActive, setCameraActive] = useState(false);
+  const pipVideoRef = useRef(null);
+  const cameraStreamRef = useRef(null);
+
+  useEffect(() => {
+    let streamInstance = null;
+    let isCancelled = false;
+
+    async function startPipCamera() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        return;
+      }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 320 },
+            height: { ideal: 240 },
+            facingMode: 'user',
+          },
+          audio: false,
+        });
+        if (isCancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        streamInstance = stream;
+        cameraStreamRef.current = stream;
+        setCameraActive(true);
+
+        if (pipVideoRef.current) {
+          pipVideoRef.current.srcObject = stream;
+          pipVideoRef.current.play().catch(() => {});
+        }
+      } catch (err) {
+        console.warn('PiP Camera initialization error:', err);
+        if (!isCancelled) setCameraActive(false);
+      }
+    }
+
+    startPipCamera();
+
+    return () => {
+      isCancelled = true;
+      if (streamInstance) {
+        streamInstance.getTracks().forEach((t) => {
+          try { t.stop(); } catch (e) {}
+        });
+      }
+      if (cameraStreamRef.current) {
+        cameraStreamRef.current.getTracks().forEach((t) => {
+          try { t.stop(); } catch (e) {}
+        });
+        cameraStreamRef.current = null;
+      }
+    };
+  }, []);
 
   // Fetch live examination questions and active attempt from backend
   useEffect(() => {
@@ -83,14 +158,22 @@ export default function ExamRoom() {
         const loadedQuestions = Array.isArray(data.questions)
           ? data.questions
           : Array.isArray(data.exam?.questions)
-          ? data.exam.questions
-          : [];
+            ? data.exam.questions
+            : [];
 
         setQuestions(loadedQuestions);
 
         // Pre-populate previously stored in-progress answers if returned by session
         if (data.answers && typeof data.answers === 'object') {
           setSelectedAnswers(data.answers);
+        }
+
+        // Initialize deadline timer
+        if (data.attempt?.deadlineAt) {
+          setDeadlineTime(new Date(data.attempt.deadlineAt).getTime());
+        } else {
+          const durationMinutes = data.exam?.durationMinutes || 90;
+          setDeadlineTime(Date.now() + durationMinutes * 60 * 1000);
         }
 
         setCurrentQuestionIndex(0);
@@ -117,24 +200,136 @@ export default function ExamRoom() {
     };
   }, [examId, token]);
 
+  // Automatic Submission on Deadline Timeout
+  const handleTimeoutSubmit = useCallback(async () => {
+    if (isSubmittingRef.current || isSubmittedRef.current) return;
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
+    setIsTimeout(true);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/exams/${examId}/submit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          answers: selectedAnswersRef.current,
+          isTimeout: true,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (cameraStreamRef.current) {
+        cameraStreamRef.current.getTracks().forEach((t) => t.stop());
+        cameraStreamRef.current = null;
+      }
+
+      if (response.ok) {
+        setSubmissionResult(data.result);
+        setIsSubmitted(true);
+        isSubmittedRef.current = true;
+      } else if (response.status === 403 || data.code === 'ALREADY_SUBMITTED') {
+        setError({
+          message: data.message || 'Assessment deadline has expired and answers were recorded.',
+          code: 'ALREADY_SUBMITTED',
+          status: response.status,
+        });
+      }
+    } catch (err) {
+      console.error('Timeout auto-submit error:', err);
+      setIsSubmitted(true);
+      isSubmittedRef.current = true;
+    } finally {
+      setIsSubmitting(false);
+      isSubmittingRef.current = false;
+      setShowSubmitModal(false);
+    }
+  }, [examId, token]);
+
+  // Countdown Timer Tick Effect
+  useEffect(() => {
+    if (isSubmitted || loading || error || !deadlineTime) return;
+
+    const tick = () => {
+      const remaining = Math.max(0, Math.floor((deadlineTime - Date.now()) / 1000));
+      setTimeLeft(remaining);
+
+      if (remaining <= 0) {
+        handleTimeoutSubmit();
+      }
+    };
+
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [deadlineTime, isSubmitted, loading, error, handleTimeoutSubmit]);
+
+  const formatTime = (seconds) => {
+    if (seconds === null || seconds === undefined) return '--:--';
+    const hrs = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    if (hrs > 0) {
+      return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
   // Handle single-option answer selection associated with the question ID
-  const handleSelectOption = useCallback((questionId, optionIndex) => {
-    setSelectedAnswers((prev) => ({
-      ...prev,
-      [questionId]: optionIndex,
-    }));
-  }, []);
+  const handleSelectOption = useCallback(
+    (questionId, optionIndex) => {
+      if (isSubmittingRef.current || isSubmittedRef.current || timeLeft === 0) return;
+
+      setSelectedAnswers((prev) => ({
+        ...prev,
+        [questionId]: optionIndex,
+      }));
+
+      // Background persistence with timeout verification
+      if (token) {
+        fetch(`${API_BASE_URL}/exams/${examId}/answer`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            questionId,
+            selectedOption: optionIndex,
+          }),
+        })
+          .then(async (res) => {
+            if (!res.ok) {
+              const body = await res.json().catch(() => ({}));
+              if (body.code === 'EXAM_TIMEOUT') {
+                handleTimeoutSubmit();
+              }
+            }
+          })
+          .catch((err) => {
+            console.warn('Background auto-save network sync handled:', err);
+          });
+      }
+    },
+    [token, examId, timeLeft, handleTimeoutSubmit]
+  );
 
   // Handle Clear Answer for a question (or current question)
-  const handleClearAnswer = useCallback((questionId) => {
-    if (!questionId) return;
-    setSelectedAnswers((prev) => {
-      if (prev[questionId] === undefined) return prev;
-      const next = { ...prev };
-      delete next[questionId];
-      return next;
-    });
-  }, []);
+  const handleClearAnswer = useCallback(
+    (questionId) => {
+      if (!questionId || isSubmittingRef.current || isSubmittedRef.current) return;
+      setSelectedAnswers((prev) => {
+        if (prev[questionId] === undefined) return prev;
+        const next = { ...prev };
+        delete next[questionId];
+        return next;
+      });
+    },
+    []
+  );
 
   // Handle Toggle Review Flag for a question (or current question)
   const handleToggleFlag = useCallback((questionId) => {
@@ -162,16 +357,62 @@ export default function ExamRoom() {
 
   // Submit dialog actions
   const handleOpenSubmitDialog = () => {
+    if (isSubmittingRef.current || isSubmittedRef.current) return;
     setShowSubmitModal(true);
   };
 
   const handleCloseSubmitDialog = () => {
+    if (isSubmittingRef.current) return;
     setShowSubmitModal(false);
   };
 
-  const handleConfirmSubmit = () => {
-    setIsSubmitted(true);
-    setShowSubmitModal(false);
+  const handleConfirmSubmit = async () => {
+    if (isSubmittingRef.current || isSubmittedRef.current) return;
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/exams/${examId}/submit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          answers: selectedAnswers,
+          isTimeout: false,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (cameraStreamRef.current) {
+        cameraStreamRef.current.getTracks().forEach((t) => t.stop());
+        cameraStreamRef.current = null;
+      }
+
+      if (response.ok) {
+        setSubmissionResult(data.result);
+        setIsSubmitted(true);
+        isSubmittedRef.current = true;
+        setShowSubmitModal(false);
+      } else if (response.status === 403 || data.code === 'ALREADY_SUBMITTED') {
+        setError({
+          message: data.message || 'You have already completed and submitted this examination.',
+          code: 'ALREADY_SUBMITTED',
+          status: response.status,
+        });
+        setShowSubmitModal(false);
+      } else {
+        alert(data.message || 'Submission failed. Please check network connection and try again.');
+      }
+    } catch (err) {
+      console.error('Submit exam error:', err);
+      alert('Unable to submit exam due to a network error. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+      isSubmittingRef.current = false;
+    }
   };
 
   // Derived state
@@ -187,10 +428,8 @@ export default function ExamRoom() {
   // Keyboard Shortcuts (A, B, C, D to select, X to clear)
   useEffect(() => {
     const handleKeyDown = (e) => {
-      // 1. Ignore if confirmation modal or dialog is open
       if (showSubmitModal) return;
 
-      // 2. Ignore if typing inside input, textarea, select, or contenteditable
       const target = e.target;
       if (
         target &&
@@ -202,14 +441,10 @@ export default function ExamRoom() {
         return;
       }
 
-      // 3. Ignore if modifier keys (Ctrl, Alt, Meta/Cmd) are pressed
       if (e.ctrlKey || e.altKey || e.metaKey) return;
-
       if (!currentQuestion) return;
 
       const key = e.key.toUpperCase();
-
-      // Check A, B, C, D for option selection
       const optionLetters = ['A', 'B', 'C', 'D'];
       const optionIndex = optionLetters.indexOf(key);
 
@@ -224,7 +459,6 @@ export default function ExamRoom() {
         return;
       }
 
-      // Check X for clearing answer
       if (key === 'X') {
         if (selectedAnswers[currentQuestion.id] !== undefined) {
           e.preventDefault();
@@ -298,9 +532,18 @@ export default function ExamRoom() {
           <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: '24px' }}>
             {error.message}
           </p>
-          <button onClick={() => navigate('/dashboard')} className="btn btn-primary" style={{ margin: '0 auto' }}>
+          <button
+            onClick={() => {
+              if (window.electronAPI && typeof window.electronAPI.setFullscreen === 'function') {
+                window.electronAPI.setFullscreen(false).catch(() => {});
+              }
+              navigate('/dashboard', { state: { tab: error.code === 'ALREADY_SUBMITTED' ? 'history' : 'exams' } });
+            }}
+            className="btn btn-primary"
+            style={{ margin: '0 auto' }}
+          >
             <ArrowLeft size={15} />
-            <span>Return to Dashboard</span>
+            <span>{error.code === 'ALREADY_SUBMITTED' ? 'View Past Results' : 'Return to Dashboard'}</span>
           </button>
         </div>
       </div>
@@ -347,32 +590,81 @@ export default function ExamRoom() {
   if (isSubmitted) {
     return (
       <div className="exam-room-root" style={{ alignItems: 'center', justifyContent: 'center' }}>
-        <div className="surface-card" style={{ padding: '40px', textAlign: 'center', maxWidth: '480px', width: '90%' }}>
+        <div className="surface-card" style={{ padding: '40px', textAlign: 'center', maxWidth: '520px', width: '90%' }}>
           <div
             style={{
               width: '54px',
               height: '54px',
               borderRadius: '50%',
-              background: 'rgba(16, 185, 129, 0.15)',
-              border: '1px solid rgba(16, 185, 129, 0.35)',
+              background: isTimeout ? 'rgba(245, 158, 11, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+              border: `1px solid ${isTimeout ? 'rgba(245, 158, 11, 0.35)' : 'rgba(16, 185, 129, 0.35)'}`,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               margin: '0 auto 16px',
-              color: '#34d399',
+              color: isTimeout ? '#fbbf24' : '#34d399',
             }}
           >
-            <Check size={28} />
+            {isTimeout ? <Clock size={28} /> : <Check size={28} />}
           </div>
           <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#ffffff', marginBottom: '8px' }}>
-            Examination Completed
+            {isTimeout ? 'Assessment Concluded — Time Expired' : 'Examination Completed & Submitted'}
           </h2>
           <p style={{ fontSize: '13.5px', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: '20px' }}>
-            Your assessment session for <strong>{exam?.title || 'this examination'}</strong> has concluded. You recorded responses for <strong>{answeredCount}</strong> of <strong>{totalQuestions}</strong> questions.
+            {isTimeout
+              ? `The time allotted for ${exam?.title || 'this examination'} has expired. Your responses were automatically finalized and graded.`
+              : `Your assessment session for ${exam?.title || 'this examination'} has been securely submitted and graded.`}
           </p>
-          <button onClick={() => navigate('/dashboard')} className="btn btn-primary" style={{ margin: '0 auto' }}>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, 1fr)',
+              gap: '12px',
+              padding: '16px',
+              background: 'rgba(15, 23, 42, 0.6)',
+              border: '1px solid var(--border-default)',
+              borderRadius: 'var(--radius-sm)',
+              marginBottom: '20px',
+              textAlign: 'center',
+            }}
+          >
+            <div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Questions</div>
+              <div style={{ fontSize: '18px', fontWeight: 700, color: '#f3f5f8', marginTop: '4px' }}>
+                {totalQuestions}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Answered</div>
+              <div style={{ fontSize: '18px', fontWeight: 700, color: '#34d399', marginTop: '4px' }}>
+                {answeredCount}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Score</div>
+              <div style={{ fontSize: '18px', fontWeight: 700, color: '#a5b4fc', marginTop: '4px' }}>
+                {submissionResult?.score !== undefined ? `${submissionResult.score}/${submissionResult.totalMarks || 100}` : 'Recorded'}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ fontSize: '12.5px', color: '#f87171', background: 'rgba(239, 68, 68, 0.1)', padding: '10px 14px', borderRadius: 'var(--radius-xs)', border: '1px solid rgba(239, 68, 68, 0.25)', marginBottom: '24px' }}>
+            Athena Single-Attempt Rule: You cannot re-enter or retake this examination.
+          </div>
+
+          <button
+            onClick={() => {
+              if (window.electronAPI && typeof window.electronAPI.setFullscreen === 'function') {
+                window.electronAPI.setFullscreen(false).catch(() => {});
+              }
+              navigate('/dashboard', { state: { tab: 'history' } });
+            }}
+            className="btn btn-primary"
+            style={{ margin: '0 auto' }}
+          >
             <ArrowLeft size={15} />
-            <span>Return to Dashboard</span>
+            <span>View Results in Dashboard</span>
           </button>
         </div>
       </div>
@@ -384,7 +676,7 @@ export default function ExamRoom() {
 
   return (
     <div className="exam-room-root">
-      {/* Top Bar: Exam Title, Subject/Code, and Visible Submit Exam Action */}
+      {/* Top Bar: Exam Title, Subject/Code, Timer, and Submit Action */}
       <header className="exam-room-topbar">
         <div className="exam-room-topbar-inner">
           <div className="exam-title-box">
@@ -402,15 +694,30 @@ export default function ExamRoom() {
             </div>
           </div>
 
-          <div className="exam-proctor-badges">
+          <div className="exam-proctor-badges" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            {/* Live Countdown Timer */}
+            <div
+              className="exam-timer-pill font-mono"
+              style={{
+                color: timeLeft !== null && timeLeft <= 60 ? '#f87171' : timeLeft !== null && timeLeft <= 300 ? '#fbbf24' : '#f3f5f8',
+                borderColor: timeLeft !== null && timeLeft <= 60 ? 'rgba(239, 68, 68, 0.45)' : timeLeft !== null && timeLeft <= 300 ? 'rgba(245, 158, 11, 0.4)' : 'var(--border-default)',
+                background: timeLeft !== null && timeLeft <= 60 ? 'rgba(239, 68, 68, 0.12)' : timeLeft !== null && timeLeft <= 300 ? 'rgba(245, 158, 11, 0.1)' : 'var(--bg-surface-elevated)',
+              }}
+              title={timeLeft !== null && timeLeft <= 300 ? 'Warning: Less than 5 minutes remaining!' : 'Assessment countdown timer'}
+            >
+              <Clock size={14} color={timeLeft !== null && timeLeft <= 60 ? '#f87171' : timeLeft !== null && timeLeft <= 300 ? '#fbbf24' : 'var(--text-muted)'} />
+              <span>{formatTime(timeLeft)}</span>
+            </div>
+
             <button
               id="btn-submit-exam"
               onClick={handleOpenSubmitDialog}
+              disabled={isSubmitting}
               className="btn btn-primary btn-sm"
               style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
             >
               <Send size={13} />
-              <span>Submit Exam</span>
+              <span>{isSubmitting ? 'Submitting...' : 'Submit Exam'}</span>
             </button>
           </div>
         </div>
@@ -420,6 +727,50 @@ export default function ExamRoom() {
       <main className="exam-room-main">
         {/* Left Side: Question Navigation Area */}
         <aside className="exam-room-sidebar">
+          {/* Live Candidate Proctoring Video Stream */}
+          <div className="surface-card proctor-pip-card" style={{ marginBottom: '16px' }}>
+            <div className="proctor-pip-header">
+              <span
+                className="pip-status-dot"
+                style={{
+                  background: cameraActive ? '#10b981' : '#ef4444',
+                  boxShadow: cameraActive ? '0 0 6px #10b981' : 'none',
+                }}
+              />
+              <span className="pip-title">
+                {cameraActive ? 'Candidate Video Feed' : 'Camera Feed Disconnected'}
+              </span>
+            </div>
+            <div className="proctor-pip-viewport">
+              <video
+                ref={(el) => {
+                  pipVideoRef.current = el;
+                  if (el && cameraStreamRef.current && el.srcObject !== cameraStreamRef.current) {
+                    el.srcObject = cameraStreamRef.current;
+                    el.play().catch(() => {});
+                  }
+                }}
+                autoPlay
+                playsInline
+                muted
+                className="proctor-pip-video"
+                aria-label="Live Candidate Feed"
+              />
+              <div className="pip-overlay-badge">
+                <span
+                  className="pulse-dot"
+                  style={{
+                    width: '5px',
+                    height: '5px',
+                    borderRadius: '50%',
+                    background: cameraActive ? '#10b981' : '#ef4444',
+                  }}
+                />
+                <span>{cameraActive ? 'LIVE PROCTOR' : 'OFFLINE'}</span>
+              </div>
+            </div>
+          </div>
+
           <div className="question-palette-card surface-card">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
               <h3 className="palette-title" style={{ margin: 0 }}>
@@ -714,11 +1065,16 @@ export default function ExamRoom() {
             </p>
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
-              <button onClick={handleCloseSubmitDialog} className="btn btn-secondary">
+              <button onClick={handleCloseSubmitDialog} disabled={isSubmitting} className="btn btn-secondary">
                 Return to Exam
               </button>
-              <button id="btn-confirm-submit" onClick={handleConfirmSubmit} className="btn btn-primary">
-                Confirm & Submit
+              <button
+                id="btn-confirm-submit"
+                onClick={handleConfirmSubmit}
+                disabled={isSubmitting}
+                className="btn btn-primary"
+              >
+                <span>{isSubmitting ? 'Submitting Assessment...' : 'Confirm & Submit'}</span>
               </button>
             </div>
           </div>

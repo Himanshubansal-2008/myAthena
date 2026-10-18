@@ -37,7 +37,6 @@ router.get("/results/my-results", authenticateToken, async (req, res) => {
       };
 
       const percentage = Number(((resData.score / resData.totalMarks) * 100).toFixed(1));
-      const passed = percentage >= 40.0;
 
       return {
         attemptId: att.id,
@@ -52,8 +51,7 @@ router.get("/results/my-results", authenticateToken, async (req, res) => {
         correctCount: resData.correctCount,
         wrongCount: resData.wrongCount,
         unansweredCount: resData.unansweredCount,
-        passed,
-        status: passed ? "PASSED" : "FAILED",
+        status: "COMPLETED",
         submittedAt: att.submittedAt || att.updatedAt,
         incidentCount: att._count.incidents,
       };
@@ -129,8 +127,6 @@ router.get("/results/:attemptId", authenticateToken, async (req, res) => {
     });
 
     const percentage = Number(((attempt.result.score / attempt.result.totalMarks) * 100).toFixed(1));
-    const passed = percentage >= 40.0;
-
     res.json({
       attemptId: attempt.id,
       examId: attempt.exam.id,
@@ -141,7 +137,7 @@ router.get("/results/:attemptId", authenticateToken, async (req, res) => {
       score: attempt.result.score,
       totalMarks: attempt.result.totalMarks,
       percentage,
-      passed,
+      status: "COMPLETED",
       correctCount: attempt.result.correctCount,
       wrongCount: attempt.result.wrongCount,
       unansweredCount: attempt.result.unansweredCount,
@@ -279,6 +275,89 @@ router.get("/:id", authenticateToken, async (req, res) => {
     // Reuse existing active attempt if available, otherwise create a new one
     let activeAttempt = existingAttempts.find((a) => a.status === "IN_PROGRESS");
 
+    // Check if active attempt has expired (timed out)
+    if (activeAttempt && activeAttempt.deadlineAt && new Date() > new Date(activeAttempt.deadlineAt)) {
+      // Auto-submit the expired attempt immediately
+      await prisma.$transaction(async (tx) => {
+        const fullAttempt = await tx.attempt.findUnique({
+          where: { id: activeAttempt.id },
+          include: {
+            exam: { include: { questions: true } },
+            answers: true,
+          },
+        });
+
+        const answersMap = {};
+        if (fullAttempt && fullAttempt.answers) {
+          fullAttempt.answers.forEach((a) => {
+            answersMap[a.questionId] = a.selectedOption;
+          });
+        }
+
+        const questions = fullAttempt?.exam?.questions || [];
+        let totalMarks = fullAttempt?.exam?.totalMarks || 100;
+        let negativeMarking = fullAttempt?.exam?.negativeMarking || 0;
+        let score = 0;
+        let correctCount = 0;
+        let wrongCount = 0;
+        let unansweredCount = 0;
+
+        questions.forEach((q) => {
+          const candidateChoice = answersMap[q.id];
+          if (candidateChoice === undefined || candidateChoice === null || candidateChoice === "") {
+            unansweredCount++;
+          } else {
+            const isCorrect =
+              String(candidateChoice) === String(q.correctAnswer) ||
+              (Array.isArray(q.options) && q.options[Number(candidateChoice)] === q.correctAnswer);
+            if (isCorrect) {
+              correctCount++;
+              score += q.marks;
+            } else {
+              wrongCount++;
+              score -= negativeMarking;
+            }
+          }
+        });
+
+        const finalScore = Math.max(0, Number(score.toFixed(2)));
+
+        await tx.result.upsert({
+          where: { attemptId: activeAttempt.id },
+          update: {
+            score: finalScore,
+            totalMarks,
+            correctCount,
+            wrongCount,
+            unansweredCount,
+            calculatedAt: new Date(),
+          },
+          create: {
+            attemptId: activeAttempt.id,
+            score: finalScore,
+            totalMarks,
+            correctCount,
+            wrongCount,
+            unansweredCount,
+          },
+        });
+
+        await tx.attempt.update({
+          where: { id: activeAttempt.id },
+          data: {
+            status: "AUTO_SUBMITTED",
+            submittedAt: new Date(),
+          },
+        });
+      });
+
+      return res.status(403).json({
+        message: "Your examination deadline has elapsed and the session was automatically submitted.",
+        code: "ALREADY_SUBMITTED",
+        isTimeout: true,
+      });
+    }
+
     if (!activeAttempt) {
       const now = new Date();
       const durationMs = (exam.durationMinutes || 60) * 60 * 1000;
@@ -375,6 +454,13 @@ router.post("/:id/answer", authenticateToken, async (req, res) => {
       return res.status(404).json({ message: "Active examination attempt not found." });
     }
 
+    if (activeAttempt.deadlineAt && new Date() > new Date(activeAttempt.deadlineAt)) {
+      return res.status(403).json({
+        message: "Assessment time has expired. Answers can no longer be recorded.",
+        code: "EXAM_TIMEOUT",
+      });
+    }
+
     const answer = await prisma.attemptAnswer.upsert({
       where: {
         attemptId_questionId: {
@@ -407,7 +493,7 @@ router.post("/:id/submit", authenticateToken, async (req, res) => {
   try {
     const examId = req.params.id;
     const userId = req.user.userId;
-    const { answers } = req.body;
+    const { answers, isTimeout } = req.body;
 
     // Use transaction for safe atomic submission and grading
     const graded = await prisma.$transaction(async (tx) => {
@@ -530,11 +616,15 @@ router.post("/:id/submit", authenticateToken, async (req, res) => {
         },
       });
 
-      // Update Attempt status to SUBMITTED
+      const isAutoSubmitted =
+        Boolean(isTimeout) ||
+        (Boolean(activeAttempt.deadlineAt) && new Date() > new Date(activeAttempt.deadlineAt));
+
+      // Update Attempt status to SUBMITTED or AUTO_SUBMITTED
       const concludedAttempt = await tx.attempt.update({
         where: { id: activeAttempt.id },
         data: {
-          status: "SUBMITTED",
+          status: isAutoSubmitted ? "AUTO_SUBMITTED" : "SUBMITTED",
           submittedAt: new Date(),
         },
       });

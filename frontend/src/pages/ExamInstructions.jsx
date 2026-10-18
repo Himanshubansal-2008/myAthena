@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context.jsx';
 import {
@@ -65,9 +65,10 @@ const DEFAULT_EXAM_DATA = {
 export default function ExamInstructions() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user } = useAuth();
+  const { user, token } = useAuth();
 
   const [acknowledged, setAcknowledged] = useState(false);
+  const [alreadySubmitted, setAlreadySubmitted] = useState(false);
 
   // Read passed exam data from navigation state if available, or fallback to sensible default
   const passedExam = location.state?.exam;
@@ -84,12 +85,38 @@ export default function ExamInstructions() {
     negativeMarking: passedExam?.negativeMarking || DEFAULT_EXAM_DATA.negativeMarking,
   };
 
+  useEffect(() => {
+    let isCancelled = false;
+    async function verifyAttempt() {
+      if (!token) return;
+      try {
+        const examId = exam?.id || 'cs-401';
+        const res = await fetch(`http://localhost:5050/api/exams/${examId}`, {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        const data = await res.json();
+        if (!isCancelled && !res.ok && data.code === 'ALREADY_SUBMITTED') {
+          setAlreadySubmitted(true);
+        }
+      } catch (err) {
+        console.warn('Attempt verification error in instructions:', err);
+      }
+    }
+    verifyAttempt();
+    return () => {
+      isCancelled = true;
+    };
+  }, [token, exam?.id]);
+
   const handleBack = () => {
-    navigate('/dashboard');
+    navigate('/dashboard', { state: { tab: alreadySubmitted ? 'history' : 'exams' } });
   };
 
   const handleContinue = () => {
-    if (!acknowledged) return;
+    if (!acknowledged || alreadySubmitted) return;
     navigate('/system-check', { state: { exam } });
   };
 
@@ -183,6 +210,38 @@ export default function ExamInstructions() {
           <p className="instructions-hero-desc">
             {exam.type} • Read all regulations, scoring rules, and proctoring constraints carefully before proceeding to system diagnostics.
           </p>
+
+          {alreadySubmitted && (
+            <div
+              style={{
+                marginTop: '16px',
+                padding: '14px 18px',
+                borderRadius: 'var(--radius-sm)',
+                background: 'rgba(239, 68, 68, 0.12)',
+                border: '1px solid rgba(239, 68, 68, 0.35)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
+                flexWrap: 'wrap',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <AlertTriangle size={18} color="#f87171" style={{ flexShrink: 0 }} />
+                <span style={{ fontSize: '13px', color: '#fca5a5', fontWeight: 500 }}>
+                  You have already completed this examination. Only one attempt is permitted per student.
+                </span>
+              </div>
+              <button
+                onClick={handleBack}
+                className="btn btn-secondary btn-sm"
+                style={{ borderColor: 'rgba(239, 68, 68, 0.4)', color: '#fca5a5' }}
+              >
+                <ArrowLeft size={13} />
+                <span>Return to Dashboard</span>
+              </button>
+            </div>
+          )}
 
           {/* Key Quantitative Specs Grid */}
           <div className="instructions-metrics-grid">
@@ -451,16 +510,18 @@ export default function ExamInstructions() {
           <div className="actions-right">
             <button
               onClick={handleContinue}
-              disabled={!acknowledged}
+              disabled={!acknowledged || alreadySubmitted}
               className="btn btn-primary instructions-continue-btn"
               title={
-                acknowledged
+                alreadySubmitted
+                  ? 'Exam already completed'
+                  : acknowledged
                   ? 'Proceed to System Diagnostics'
                   : 'Please acknowledge the instructions first'
               }
-              aria-disabled={!acknowledged}
+              aria-disabled={!acknowledged || alreadySubmitted}
             >
-              <span>Continue to System Check</span>
+              <span>{alreadySubmitted ? 'Attempt Already Completed' : 'Continue to System Check'}</span>
               <ArrowRight size={16} />
             </button>
           </div>

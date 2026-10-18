@@ -27,11 +27,9 @@ app.use("/api/auth", require("./routes/auth"));
 app.use("/api/users", require("./routes/user"));
 app.use("/api/exams", require("./routes/exams"));
 app.use("/api/exam", require("./routes/exams"));
-app.use("/api/results", require("./routes/results"));
 
 // Lightweight Health Check (Priority 3)
 const prisma = require("./prisma");
-const { seedDefaultExams } = require("./seedData");
 
 app.get("/api/health", async (req, res) => {
   let dbStatus = "connected";
@@ -59,9 +57,4 @@ const PORT = process.env.PORT || 5050;
 
 app.listen(PORT, async () => {
   console.log(`Athena API running on http://localhost:${PORT}`);
-  try {
-    await seedDefaultExams();
-  } catch (err) {
-    console.warn("Auto-seeding skipped:", err.message);
-  }
 });
