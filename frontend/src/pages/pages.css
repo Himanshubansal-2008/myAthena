@@ -2281,6 +2281,29 @@
   border-color: var(--accent-primary);
 }
 
+.option-letter-tag {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.option-choice-btn.selected .option-letter-tag {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  color: #ffffff;
+}
+
 .option-text {
   flex: 1;
 }

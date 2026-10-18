@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context.jsx';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -9,15 +9,50 @@ import {
   CheckCircle2,
   Lock,
   X,
+  Clock,
+  RotateCcw,
 } from 'lucide-react';
 import './pages.css';
 
 export default function Dashboard() {
-  const { user, logout } = useAuth();
+  const { user, token, logout } = useAuth();
   const navigate = useNavigate();
 
   const [activeTab, setActiveTab] = useState('exams'); // 'exams' | 'history'
   const [selectedExam, setSelectedExam] = useState(null);
+
+  // --- Priority 1 & 2: Past Results State ---
+  const [pastResults, setPastResults] = useState([]);
+  const [loadingResults, setLoadingResults] = useState(false);
+  const [resultsError, setResultsError] = useState(null);
+
+  const fetchResults = useCallback(async () => {
+    if (!token) return;
+    setLoadingResults(true);
+    setResultsError(null);
+    try {
+      const res = await fetch('http://localhost:5050/api/exams/results/my-results', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setPastResults(data.results || []);
+      } else {
+        setResultsError(data.message || 'Failed to retrieve past examination records.');
+      }
+    } catch (err) {
+      console.warn('Past results fetch error:', err);
+      setResultsError('Unable to connect to the examination results service.');
+    } finally {
+      setLoadingResults(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    fetchResults();
+  }, [fetchResults, activeTab]);
 
   const handleLogout = () => {
     logout();

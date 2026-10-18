@@ -25,10 +25,26 @@ app.use(express.json());
 // Routes
 app.use("/api/auth", require("./routes/auth"));
 app.use("/api/users", require("./routes/user"));
+app.use("/api/exams", require("./routes/exams"));
+app.use("/api/exam", require("./routes/exams"));
+app.use("/api/results", require("./routes/results"));
 
-app.get("/api/health", (req, res) => {
+// Lightweight Health Check (Priority 3)
+const prisma = require("./prisma");
+const { seedDefaultExams } = require("./seedData");
+
+app.get("/api/health", async (req, res) => {
+  let dbStatus = "connected";
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+  } catch (err) {
+    dbStatus = "disconnected";
+  }
+
   res.json({
     status: "ok",
+    api: "online",
+    database: dbStatus,
     service: "Athena Examination System Backend",
     port: process.env.PORT || 5050,
     timestamp: new Date().toISOString(),
@@ -41,6 +57,11 @@ app.get("/", (req, res) => {
 
 const PORT = process.env.PORT || 5050;
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Athena API running on http://localhost:${PORT}`);
+  try {
+    await seedDefaultExams();
+  } catch (err) {
+    console.warn("Auto-seeding skipped:", err.message);
+  }
 });

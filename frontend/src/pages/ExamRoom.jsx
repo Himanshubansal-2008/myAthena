@@ -1,320 +1,401 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { useAuth } from '../context.jsx';
 import {
   Shield,
-  AlertTriangle,
-  Clock,
-  CheckCircle2,
-  AlertCircle,
-  Eye,
-  Camera,
-  Maximize2,
   ArrowRight,
   ArrowLeft,
-  X,
+  Check,
+  AlertTriangle,
+  AlertCircle,
   FileText,
-  Lock,
+  X,
+  Send,
+  HelpCircle,
 } from 'lucide-react';
 import './pages.css';
 
-const DEFAULT_SAMPLE_QUESTIONS = [
-  {
-    id: 1,
-    prompt: 'In a distributed systems environment, which theorem states that it is impossible for a distributed data store to simultaneously provide more than two out of Consistency, Availability, and Partition Tolerance?',
-    options: [
-      'CAP Theorem (Brewer\'s Theorem)',
-      'Byzantine Generals Theorem',
-      'Amdahl\'s Law',
-      'Nyquist-Shannon Sampling Theorem',
-    ],
-  },
-  {
-    id: 2,
-    prompt: 'Which protocol operates at the Transport Layer of the OSI Model and provides connectionless, best-effort message delivery without transmission guarantees?',
-    options: [
-      'Transmission Control Protocol (TCP)',
-      'User Datagram Protocol (UDP)',
-      'Internet Control Message Protocol (ICMP)',
-      'Border Gateway Protocol (BGP)',
-    ],
-  },
-  {
-    id: 3,
-    prompt: 'What consensus algorithm is specifically designed to achieve leader election and log replication consistency across fault-tolerant distributed clusters with high understandability?',
-    options: [
-      'Raft Consensus Algorithm',
-      'Dijkstra\'s Shortest Path Algorithm',
-      'Bellman-Ford Distance Vector Algorithm',
-      'Diffie-Hellman Key Exchange',
-    ],
-  },
-  {
-    id: 4,
-    prompt: 'When a TLS/SSL session handshake occurs, which cryptographic mechanism is primarily utilized to establish the shared symmetric session key securely across an untrusted network?',
-    options: [
-      'Asymmetric Public Key Encryption / Diffie-Hellman',
-      'Simple XOR Cipher Masking',
-      'Cyclic Redundancy Check (CRC-32)',
-      'HMAC-SHA256 Token Signing',
-    ],
-  },
-];
+const OPTION_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+const API_BASE_URL = 'http://localhost:5050/api';
 
 export default function ExamRoom() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user } = useAuth();
-  const exam = location.state?.exam;
+  const params = useParams();
+  const { token } = useAuth();
 
-  // --- Exam Session State ---
+  // Resolve exam ID from URL parameter or navigation state (fallback: cs-401)
+  const examId = useMemo(() => {
+    if (params.examId && params.examId !== 'live') {
+      return params.examId;
+    }
+    return location.state?.exam?.id || 'cs-401';
+  }, [params.examId, location.state]);
+
+  // Exam Data States
+  const [exam, setExam] = useState(location.state?.exam || null);
+  const [questions, setQuestions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  // In-Memory Navigation & Answer State
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [selectedAnswers, setSelectedAnswers] = useState({});
-  const [timeLeft, setTimeLeft] = useState((exam?.durationMinutes || 90) * 60);
-  const [showExitConfirm, setShowExitConfirm] = useState(false);
-  const [showLogDrawer, setShowLogDrawer] = useState(false);
+  const [showSubmitModal, setShowSubmitModal] = useState(false);
+  const [isSubmitted, setIsSubmitted] = useState(false);
 
-  // --- Proctoring & Security Flag State ---
-  // incidents: array of { id, type, label, timestamp, formattedTime }
-  const [incidents, setIncidents] = useState([]);
-  const [activeWarning, setActiveWarning] = useState(null); // Active modal dialog
-  const lastIncidentTimeRef = useRef(0);
-
-  // --- Camera PiP Monitor ---
-  const pipVideoRef = useRef(null);
-  const pipStreamRef = useRef(null);
-
-  // Stop camera tracks cleanly
-  const cleanupCamera = useCallback(() => {
-    if (pipStreamRef.current) {
-      pipStreamRef.current.getTracks().forEach((track) => {
-        try {
-          track.stop();
-        } catch (e) {
-          console.error('Error stopping pip video track:', e);
-        }
-      });
-      pipStreamRef.current = null;
-    }
-    if (pipVideoRef.current) {
-      pipVideoRef.current.srcObject = null;
-    }
-  }, []);
-
-  // Initialize Corner Camera Feed
+  // Fetch live examination questions and active attempt from backend
   useEffect(() => {
-    let isMounted = true;
+    let isCancelled = false;
 
-    async function initCornerCamera() {
-      if (!navigator.mediaDevices?.getUserMedia) return;
+    async function loadExamSession() {
+      setLoading(true);
+      setError(null);
+
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 320 }, height: { ideal: 240 }, facingMode: 'user' },
-          audio: false,
+        const response = await fetch(`${API_BASE_URL}/exams/${examId}`, {
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
         });
-        if (!isMounted) {
-          stream.getTracks().forEach((t) => t.stop());
+
+        const data = await response.json();
+
+        if (isCancelled) return;
+
+        if (!response.ok) {
+          setError({
+            message: data.message || 'Unable to load examination session.',
+            code: data.code || 'LOAD_ERROR',
+            status: response.status,
+          });
+          setLoading(false);
           return;
         }
-        pipStreamRef.current = stream;
-        if (pipVideoRef.current) {
-          pipVideoRef.current.srcObject = stream;
-          pipVideoRef.current.play().catch(() => {});
+
+        // Populate real exam metadata and questions from backend
+        setExam(data.exam);
+
+        const loadedQuestions = Array.isArray(data.questions)
+          ? data.questions
+          : Array.isArray(data.exam?.questions)
+          ? data.exam.questions
+          : [];
+
+        setQuestions(loadedQuestions);
+
+        // Pre-populate previously stored in-progress answers if returned by session
+        if (data.answers && typeof data.answers === 'object') {
+          setSelectedAnswers(data.answers);
         }
+
+        setCurrentQuestionIndex(0);
       } catch (err) {
-        console.warn('PiP Camera initialization skipped or unavailable:', err);
-      }
-    }
-
-    initCornerCamera();
-
-    return () => {
-      isMounted = false;
-      cleanupCamera();
-    };
-  }, [cleanupCamera]);
-
-  // Unified, Debounced Proctoring Incident Dispatcher
-  const recordProctoringIncident = useCallback((eventType, label) => {
-    const now = Date.now();
-    // Guard: Prevent double-counting when visibilitychange and window blur fire simultaneously
-    if (now - lastIncidentTimeRef.current < 1500) {
-      return;
-    }
-    lastIncidentTimeRef.current = now;
-
-    const newIncident = {
-      id: `incident-${now}`,
-      type: eventType,
-      label,
-      timestamp: new Date().toISOString(),
-      formattedTime: new Date().toLocaleTimeString(),
-    };
-
-    setIncidents((prev) => {
-      const updated = [...prev, newIncident];
-      return updated;
-    });
-
-    setActiveWarning(newIncident);
-  }, []);
-
-  // Proctoring Event Listeners (Page Visibility, Window Blur, Electron Bridge, Fullscreen Exit)
-  useEffect(() => {
-    // 1. Page Visibility API (detects tab switching & window minimize)
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        recordProctoringIncident(
-          'TAB_SWITCH_OR_MINIMIZE',
-          'Window Minimized or Active Tab Switched'
-        );
-      }
-    };
-
-    // 2. Window Blur (detects clicking outside Athena into another application)
-    const handleWindowBlur = () => {
-      recordProctoringIncident(
-        'WINDOW_BLUR',
-        'Application Focus Lost (Navigated to Another Application)'
-      );
-    };
-
-    // 3. Fullscreen Exit Detection
-    const handleFullscreenChange = () => {
-      const isFull = Boolean(document.fullscreenElement || document.webkitFullscreenElement);
-      if (!isFull) {
-        recordProctoringIncident(
-          'FULLSCREEN_EXITED',
-          'Exited Dedicated Full-Screen Mode'
-        );
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('blur', handleWindowBlur);
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
-
-    // 4. Secure Electron IPC Bridge listener (if running inside Electron)
-    let unsubscribeElectronBlur = null;
-    if (window.electronAPI?.onWindowBlur) {
-      unsubscribeElectronBlur = window.electronAPI.onWindowBlur(() => {
-        recordProctoringIncident(
-          'ELECTRON_DESKTOP_BLUR',
-          'Electron Application Window Lost Focus'
-        );
-      });
-    }
-
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('blur', handleWindowBlur);
-      document.removeEventListener('fullscreenchange', handleFullscreenChange);
-      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
-      if (unsubscribeElectronBlur) {
-        unsubscribeElectronBlur();
-      }
-    };
-  }, [recordProctoringIncident]);
-
-  // Countdown Timer
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          return 0;
+        if (!isCancelled) {
+          console.error('Failed to retrieve live examination questions:', err);
+          setError({
+            message:
+              'Network error while connecting to the assessment backend server. Please verify the backend service is running on http://localhost:5050.',
+            code: 'NETWORK_ERROR',
+          });
         }
-        return prev - 1;
-      });
-    }, 1000);
+      } finally {
+        if (!isCancelled) {
+          setLoading(false);
+        }
+      }
+    }
 
-    return () => clearInterval(timer);
-  }, []);
+    loadExamSession();
 
-  const formatTimer = (seconds) => {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  };
+    return () => {
+      isCancelled = true;
+    };
+  }, [examId, token]);
 
-  const handleSelectOption = (idx) => {
+  const [submitting, setSubmitting] = useState(false);
+  const [submissionResult, setSubmissionResult] = useState(null);
+
+  // Handle single-option answer selection associated with the question ID
+  const handleSelectOption = (questionId, optionIndex) => {
     setSelectedAnswers((prev) => ({
       ...prev,
-      [currentQuestionIndex]: idx,
+      [questionId]: optionIndex,
     }));
+
+    if (token) {
+      fetch(`${API_BASE_URL}/exams/${examId}/answer`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ questionId, selectedOption: optionIndex }),
+      }).catch((err) => console.warn('Failed to auto-save answer:', err));
+    }
   };
 
-  const handleDismissWarning = () => {
-    // Re-engage fullscreen if exited
-    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
-      if (document.documentElement.requestFullscreen) {
-        document.documentElement.requestFullscreen().catch(() => {});
+  // Safe navigation handlers
+  const handlePrevQuestion = () => {
+    setCurrentQuestionIndex((prev) => Math.max(0, prev - 1));
+  };
+
+  const handleNextQuestion = () => {
+    setCurrentQuestionIndex((prev) => Math.min(questions.length - 1, prev + 1));
+  };
+
+  const handleJumpToQuestion = (index) => {
+    if (index >= 0 && index < questions.length) {
+      setCurrentQuestionIndex(index);
+    }
+  };
+
+  // Submit dialog actions
+  const handleOpenSubmitDialog = () => {
+    setShowSubmitModal(true);
+  };
+
+  const handleCloseSubmitDialog = () => {
+    setShowSubmitModal(false);
+  };
+
+  const handleConfirmSubmit = async () => {
+    setSubmitting(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/exams/${examId}/submit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ answers: selectedAnswers }),
+      });
+
+      const data = await response.json();
+      if (response.ok) {
+        setSubmissionResult(data.result);
+        setIsSubmitted(true);
+      } else {
+        alert(data.message || 'Failed to submit examination.');
       }
+    } catch (err) {
+      console.error('Submission error:', err);
+      setIsSubmitted(true);
+    } finally {
+      setSubmitting(false);
+      setShowSubmitModal(false);
     }
-    setActiveWarning(null);
   };
 
-  const handleFinishExam = () => {
-    cleanupCamera();
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
-    }
-    navigate('/dashboard');
-  };
+  // Derived state
+  const totalQuestions = questions.length;
+  const currentQuestion = questions[currentQuestionIndex] || null;
+  const answeredCount = Object.keys(selectedAnswers).length;
+  const unansweredCount = Math.max(0, totalQuestions - answeredCount);
 
-  const questions = DEFAULT_SAMPLE_QUESTIONS;
-  const currentQuestion = questions[currentQuestionIndex];
-  const incidentCount = incidents.length;
+  // --- STATE 1: LOADING STATE ---
+  if (loading) {
+    return (
+      <div className="exam-room-root" style={{ alignItems: 'center', justifyContent: 'center' }}>
+        <div className="surface-card" style={{ padding: '40px', textAlign: 'center', maxWidth: '420px', width: '90%' }}>
+          <div
+            style={{
+              width: '48px',
+              height: '48px',
+              borderRadius: 'var(--radius-sm)',
+              background: 'rgba(79, 70, 229, 0.15)',
+              border: '1px solid rgba(79, 70, 229, 0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 16px',
+              color: '#a5b4fc',
+            }}
+          >
+            <Shield size={24} />
+          </div>
+          <h2 style={{ fontSize: '18px', fontWeight: 600, color: '#f3f5f8', marginBottom: '8px' }}>
+            Loading Examination
+          </h2>
+          <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            Retrieving examination questions and initializing your authenticated candidate session...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // --- STATE 2: ERROR STATE (Unauthorized, Already Submitted, Invalid ID) ---
+  if (error) {
+    return (
+      <div className="exam-room-root" style={{ alignItems: 'center', justifyContent: 'center' }}>
+        <div className="surface-card" style={{ padding: '40px', textAlign: 'center', maxWidth: '480px', width: '90%' }}>
+          <div
+            style={{
+              width: '48px',
+              height: '48px',
+              borderRadius: '50%',
+              background: 'rgba(239, 68, 68, 0.12)',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 16px',
+              color: '#f87171',
+            }}
+          >
+            <AlertTriangle size={24} />
+          </div>
+          <h2 style={{ fontSize: '18px', fontWeight: 600, color: '#f3f5f8', marginBottom: '8px' }}>
+            {error.code === 'ALREADY_SUBMITTED' ? 'Assessment Already Submitted' : 'Unable to Access Examination'}
+          </h2>
+          <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: '24px' }}>
+            {error.message}
+          </p>
+          <button onClick={() => navigate('/dashboard')} className="btn btn-primary" style={{ margin: '0 auto' }}>
+            <ArrowLeft size={15} />
+            <span>Return to Dashboard</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // --- STATE 3: EMPTY QUESTIONS STATE ---
+  if (totalQuestions === 0) {
+    return (
+      <div className="exam-room-root" style={{ alignItems: 'center', justifyContent: 'center' }}>
+        <div className="surface-card" style={{ padding: '40px', textAlign: 'center', maxWidth: '480px', width: '90%' }}>
+          <div
+            style={{
+              width: '48px',
+              height: '48px',
+              borderRadius: '50%',
+              background: 'rgba(148, 163, 184, 0.1)',
+              border: '1px solid var(--border-default)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 16px',
+              color: 'var(--text-muted)',
+            }}
+          >
+            <FileText size={24} />
+          </div>
+          <h2 style={{ fontSize: '18px', fontWeight: 600, color: '#f3f5f8', marginBottom: '8px' }}>
+            No Questions Available
+          </h2>
+          <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: '24px' }}>
+            This examination has not yet been loaded with assessment questions. Please contact your examination proctor or institutional administrator.
+          </p>
+          <button onClick={() => navigate('/dashboard')} className="btn btn-primary" style={{ margin: '0 auto' }}>
+            <ArrowLeft size={15} />
+            <span>Return to Dashboard</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // --- STATE 4: SUBMISSION CONFIRMED / CONCLUDED STATE ---
+  if (isSubmitted) {
+    return (
+      <div className="exam-room-root" style={{ alignItems: 'center', justifyContent: 'center' }}>
+        <div className="surface-card" style={{ padding: '40px', textAlign: 'center', maxWidth: '480px', width: '90%' }}>
+          <div
+            style={{
+              width: '54px',
+              height: '54px',
+              borderRadius: '50%',
+              background: 'rgba(16, 185, 129, 0.15)',
+              border: '1px solid rgba(16, 185, 129, 0.35)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 16px',
+              color: '#34d399',
+            }}
+          >
+            <Check size={28} />
+          </div>
+          <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#ffffff', marginBottom: '8px' }}>
+            Examination Completed
+          </h2>
+          <p style={{ fontSize: '13.5px', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: '20px' }}>
+            Your assessment session for <strong>{exam?.title || 'this examination'}</strong> has concluded. You recorded responses for <strong>{answeredCount}</strong> of <strong>{totalQuestions}</strong> questions.
+          </p>
+
+          {submissionResult && (
+            <div style={{
+              background: 'var(--bg-surface-elevated)',
+              border: '1px solid var(--border-default)',
+              borderRadius: 'var(--radius-sm)',
+              padding: '16px',
+              marginBottom: '20px',
+              textAlign: 'left',
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Official Score</span>
+                <span className="font-mono" style={{ fontSize: '16px', fontWeight: 700, color: submissionResult.passed ? '#34d399' : '#fbbf24' }}>
+                  {submissionResult.score} / {submissionResult.totalMarks} pts ({submissionResult.percentage}%)
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                <span>Evaluation Status</span>
+                <span style={{ fontWeight: 600, color: submissionResult.passed ? '#34d399' : '#fbbf24' }}>
+                  {submissionResult.passed ? 'PASSED (Satisfactory)' : 'FAILED (Under Passing Threshold)'}
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px', color: 'var(--text-muted)', marginTop: '6px' }}>
+                <span>Performance Breakdown</span>
+                <span>{submissionResult.correctCount} Correct • {submissionResult.wrongCount} Incorrect</span>
+              </div>
+            </div>
+          )}
+
+          <button onClick={() => navigate('/dashboard')} className="btn btn-primary" style={{ margin: '0 auto' }}>
+            <ArrowLeft size={15} />
+            <span>Return to Dashboard</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // --- STATE 5: LIVE EXAMINATION INTERFACE ---
+  const optionsList = Array.isArray(currentQuestion.options) ? currentQuestion.options : [];
+  const currentSelectedOption = selectedAnswers[currentQuestion.id];
 
   return (
     <div className="exam-room-root">
-      {/* Top Proctored Exam Header */}
+      {/* Top Bar: Exam Title, Subject/Code, and Visible Submit Exam Action */}
       <header className="exam-room-topbar">
         <div className="exam-room-topbar-inner">
-          {/* Brand & Exam Title */}
           <div className="exam-title-box">
             <div className="exam-shield-icon">
               <Shield size={16} />
             </div>
             <div>
               <div className="exam-main-title">
-                {exam?.title || 'Advanced Computer Networks & Distributed Systems'}
+                {exam?.title || 'Live Examination Assessment'}
               </div>
               <div className="exam-meta-sub">
-                <span className="font-mono exam-code-tag">{exam?.code || 'CS-401'}</span>
-                <span>• Live Proctored Assessment</span>
+                <span className="font-mono exam-code-tag">{exam?.code || exam?.id || 'EXAM'}</span>
+                <span>• {exam?.description || 'Assessment Session'}</span>
               </div>
             </div>
           </div>
 
-          {/* Incident / Flag Counter Badge */}
           <div className="exam-proctor-badges">
             <button
-              onClick={() => setShowLogDrawer(true)}
-              className={`proctor-incident-pill ${incidentCount === 0 ? 'zero' : incidentCount === 1 ? 'warning' : 'critical'}`}
-              title="Click to view proctoring incident log"
+              id="btn-submit-exam"
+              onClick={handleOpenSubmitDialog}
+              className="btn btn-primary btn-sm"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
             >
-              <AlertTriangle size={14} />
-              <span>
-                {incidentCount === 0
-                  ? '0 Proctoring Flags'
-                  : `${incidentCount} Flag${incidentCount > 1 ? 's' : ''} Recorded`}
-              </span>
-            </button>
-
-            {/* Countdown Timer */}
-            <div className="exam-timer-pill font-mono">
-              <Clock size={15} />
-              <span>{formatTimer(timeLeft)}</span>
-            </div>
-
-            {/* Finish Action */}
-            <button
-              onClick={() => setShowExitConfirm(true)}
-              className="btn btn-secondary btn-sm"
-            >
-              Finish Exam
+              <Send size={13} />
+              <span>Submit Exam</span>
             </button>
           </div>
         </div>
@@ -322,114 +403,112 @@ export default function ExamRoom() {
 
       {/* Main Examination Viewport */}
       <main className="exam-room-main">
-        {/* Left Side: Question Navigation & Live PiP Camera */}
+        {/* Left Side: Question Navigation Area */}
         <aside className="exam-room-sidebar">
-          {/* Live PiP Webcam Feed Widget */}
-          <div className="proctor-pip-card surface-card">
-            <div className="proctor-pip-header">
-              <div className="pip-status-dot" />
-              <span className="pip-title">Live Candidate Feed</span>
-            </div>
-            <div className="proctor-pip-viewport">
-              <video
-                ref={pipVideoRef}
-                autoPlay
-                playsInline
-                muted
-                className="proctor-pip-video"
-              />
-              <div className="pip-overlay-badge">
-                <Camera size={11} />
-                <span>Monitoring Active</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Question Palette */}
           <div className="question-palette-card surface-card">
-            <h3 className="palette-title">Question Palette</h3>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+              <h3 className="palette-title" style={{ margin: 0 }}>
+                Question Navigation
+              </h3>
+              <span className="font-mono" style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                {answeredCount}/{totalQuestions}
+              </span>
+            </div>
+
             <div className="palette-grid">
               {questions.map((q, idx) => {
                 const isCurrent = idx === currentQuestionIndex;
-                const isAnswered = selectedAnswers[idx] !== undefined;
+                const isAnswered = selectedAnswers[q.id] !== undefined;
 
                 return (
                   <button
                     key={q.id}
-                    onClick={() => setCurrentQuestionIndex(idx)}
+                    id={`nav-question-${idx + 1}`}
+                    onClick={() => handleJumpToQuestion(idx)}
                     className={`palette-btn font-mono ${isCurrent ? 'current' : ''} ${isAnswered ? 'answered' : ''}`}
+                    title={`Question ${idx + 1}${isAnswered ? ' (Answered)' : ' (Unattempted)'}`}
                   >
                     {idx + 1}
                   </button>
                 );
               })}
             </div>
+
             <div className="palette-legend">
               <div className="legend-item">
-                <span className="legend-dot answered" />
-                <span>Answered</span>
+                <span className="legend-dot current" />
+                <span>Current Question</span>
               </div>
               <div className="legend-item">
-                <span className="legend-dot current" />
-                <span>Current</span>
+                <span className="legend-dot answered" />
+                <span>Answered ({answeredCount})</span>
               </div>
               <div className="legend-item">
                 <span className="legend-dot unanswered" />
-                <span>Unattempted</span>
+                <span>Unattempted ({unansweredCount})</span>
               </div>
             </div>
           </div>
         </aside>
 
-        {/* Center / Right: Question Content */}
+        {/* Center / Right: Question Content and Multiple Choice Options */}
         <div className="exam-question-area">
           <div className="surface-card question-display-card animate-fade-in">
-            {/* Question Header */}
+            {/* Question Header: Counter and Marks */}
             <div className="question-header-row">
               <span className="question-number-pill">
-                Question {currentQuestionIndex + 1} of {questions.length}
+                Question {currentQuestionIndex + 1} of {totalQuestions}
               </span>
-              <span className="question-points-pill">+2.0 / -0.50 Pts</span>
+              <span className="question-points-pill font-mono">
+                +{currentQuestion.marks || 1}.0 Point{currentQuestion.marks > 1 ? 's' : ''}
+              </span>
             </div>
 
-            {/* Prompt Text */}
-            <h2 className="question-prompt-text">{currentQuestion.prompt}</h2>
+            {/* Question Prompt Text */}
+            <h2 className="question-prompt-text">{currentQuestion.text}</h2>
 
-            {/* Options List */}
+            {/* Multiple-Choice Options A, B, C, D */}
             <div className="question-options-stack">
-              {currentQuestion.options.map((opt, optIdx) => {
-                const isSelected = selectedAnswers[currentQuestionIndex] === optIdx;
+              {optionsList.map((optionText, optIdx) => {
+                const letter = OPTION_LETTERS[optIdx] || String(optIdx + 1);
+                const isSelected = currentSelectedOption === optIdx;
 
                 return (
                   <button
                     key={optIdx}
-                    onClick={() => handleSelectOption(optIdx)}
+                    id={`option-${currentQuestion.id}-${optIdx}`}
+                    type="button"
+                    onClick={() => handleSelectOption(currentQuestion.id, optIdx)}
                     className={`option-choice-btn ${isSelected ? 'selected' : ''}`}
                   >
+                    <div className="option-letter-tag font-mono">{letter}</div>
                     <div className="option-radio-indicator">
-                      {isSelected ? <Check size={13} /> : null}
+                      {isSelected ? <Check size={13} strokeWidth={3} /> : null}
                     </div>
-                    <span className="option-text">{opt}</span>
+                    <span className="option-text">{optionText}</span>
                   </button>
                 );
               })}
             </div>
 
-            {/* Navigation Actions */}
+            {/* Question Footer: Previous, Next, and Submit Actions */}
             <div className="question-footer-row">
               <button
-                onClick={() => setCurrentQuestionIndex((prev) => Math.max(0, prev - 1))}
+                id="btn-prev-question"
+                onClick={handlePrevQuestion}
                 disabled={currentQuestionIndex === 0}
                 className="btn btn-secondary"
+                style={{ opacity: currentQuestionIndex === 0 ? 0.45 : 1, cursor: currentQuestionIndex === 0 ? 'not-allowed' : 'pointer' }}
               >
                 <ArrowLeft size={14} />
                 <span>Previous</span>
               </button>
 
               <div style={{ display: 'flex', gap: '10px' }}>
-                {currentQuestionIndex < questions.length - 1 ? (
+                {currentQuestionIndex < totalQuestions - 1 ? (
                   <button
-                    onClick={() => setCurrentQuestionIndex((prev) => Math.min(questions.length - 1, prev + 1))}
+                    id="btn-next-question"
+                    onClick={handleNextQuestion}
                     className="btn btn-primary"
                   >
                     <span>Next Question</span>
@@ -437,10 +516,12 @@ export default function ExamRoom() {
                   </button>
                 ) : (
                   <button
-                    onClick={() => setShowExitConfirm(true)}
+                    id="btn-finish-exam-footer"
+                    onClick={handleOpenSubmitDialog}
                     className="btn btn-primary"
                   >
                     <span>Review & Submit</span>
+                    <ArrowRight size={14} />
                   </button>
                 )}
               </div>
@@ -449,120 +530,82 @@ export default function ExamRoom() {
         </div>
       </main>
 
-      {/* =========================================================================
-          PROCTORING WARNING MODAL DIALOG (Triggered upon observable incident)
-         ========================================================================= */}
-      {activeWarning && (
-        <div className="proctor-warning-overlay animate-fade-in" role="alertdialog">
-          <div className="surface-card proctor-warning-modal">
-            <div className="proctor-warning-icon-wrapper">
-              <AlertTriangle size={36} color="#ef4444" />
-            </div>
-
-            <div className="proctor-warning-badge-tag">
-              PROCTORING INTEGRITY WARNING #{incidentCount}
-            </div>
-
-            <h2 className="proctor-warning-title">
-              Assessment Window Focus Loss Detected
-            </h2>
-
-            <p className="proctor-warning-desc">
-              Athena has flagged an integrity infraction during your active examination session. Navigating away, minimizing the window, or switching tabs is strictly forbidden under institutional rules.
-            </p>
-
-            {/* Incident Audit Details */}
-            <div className="proctor-incident-details-box font-mono">
-              <div className="incident-detail-row">
-                <span className="detail-key">Infraction Type:</span>
-                <span className="detail-value alert-red">{activeWarning.label}</span>
-              </div>
-              <div className="incident-detail-row">
-                <span className="detail-key">Timestamp:</span>
-                <span className="detail-value">{activeWarning.formattedTime} ({activeWarning.timestamp})</span>
-              </div>
-              <div className="incident-detail-row">
-                <span className="detail-key">Total Flags:</span>
-                <span className="detail-value font-bold">{incidentCount} / 3 Allowed</span>
-              </div>
-            </div>
-
-            <p className="proctor-warning-footer-note">
-              This incident has been logged with your candidate telemetry. Continuing infractions will result in automatic exam lock.
-            </p>
-
-            <button
-              onClick={handleDismissWarning}
-              className="btn btn-primary proctor-warning-ack-btn"
-            >
-              <span>I Understand & Resume Examination</span>
-              <ArrowRight size={16} />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Finish / Exit Confirmation Modal */}
-      {showExitConfirm && (
-        <div className="modal-overlay">
-          <div className="surface-card modal-content-card animate-fade-in">
-            <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#f3f5f8', marginBottom: '8px' }}>
-              Confirm Assessment Submission
-            </h3>
-            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: '20px' }}>
-              You have answered {Object.keys(selectedAnswers).length} of {questions.length} questions. Are you sure you want to conclude your session and return to the dashboard?
-            </p>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
-              <button onClick={() => setShowExitConfirm(false)} className="btn btn-secondary">
-                Continue Testing
-              </button>
-              <button onClick={handleFinishExam} className="btn btn-primary">
-                Confirm & Submit
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Proctoring Incident Log Drawer */}
-      {showLogDrawer && (
-        <div className="proctor-drawer-overlay" onClick={() => setShowLogDrawer(false)}>
-          <div className="proctor-drawer surface-card animate-fade-in" onClick={(e) => e.stopPropagation()}>
-            <div className="drawer-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Shield size={18} color="#a5b4fc" />
-                <h3 style={{ fontSize: '15px', fontWeight: 600, color: '#f3f5f8' }}>
-                  Proctoring Audit Log
+      {/* Confirmation Dialog Before Final Submission */}
+      {showSubmitModal && (
+        <div className="modal-overlay" role="dialog" aria-modal="true">
+          <div className="surface-card modal-content-card animate-fade-in" style={{ maxWidth: '460px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div
+                  style={{
+                    width: '32px',
+                    height: '32px',
+                    borderRadius: 'var(--radius-xs)',
+                    background: 'rgba(79, 70, 229, 0.15)',
+                    border: '1px solid rgba(79, 70, 229, 0.3)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#a5b4fc',
+                  }}
+                >
+                  <Shield size={16} />
+                </div>
+                <h3 style={{ fontSize: '17px', fontWeight: 700, color: '#f3f5f8', margin: 0 }}>
+                  Confirm Exam Submission
                 </h3>
               </div>
               <button
-                onClick={() => setShowLogDrawer(false)}
-                style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+                onClick={handleCloseSubmitDialog}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  padding: '4px',
+                }}
               >
                 <X size={18} />
               </button>
             </div>
 
-            <div className="drawer-body">
-              {incidents.length === 0 ? (
-                <div style={{ padding: '32px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
-                  <CheckCircle2 size={32} color="#10b981" style={{ margin: '0 auto 12px' }} />
-                  No security incidents or window blur events recorded. Perfect integrity score.
-                </div>
-              ) : (
-                <div className="incident-log-list">
-                  {incidents.map((inc, i) => (
-                    <div key={inc.id} className="incident-log-item">
-                      <div className="log-item-header">
-                        <span className="log-item-tag font-mono">Flag #{i + 1}</span>
-                        <span className="log-item-time font-mono">{inc.formattedTime}</span>
-                      </div>
-                      <div className="log-item-label">{inc.label}</div>
-                      <div className="log-item-iso font-mono">{inc.timestamp}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
+            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: '16px' }}>
+              You have answered <strong>{answeredCount}</strong> out of <strong>{totalQuestions}</strong> questions in this assessment.
+            </p>
+
+            {unansweredCount > 0 && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                  padding: '10px 14px',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'rgba(245, 158, 11, 0.12)',
+                  border: '1px solid rgba(245, 158, 11, 0.3)',
+                  color: '#fbbf24',
+                  fontSize: '12.5px',
+                  marginBottom: '16px',
+                }}
+              >
+                <AlertCircle size={16} flexShrink={0} />
+                <span>
+                  You have <strong>{unansweredCount}</strong> unattempted question{unansweredCount > 1 ? 's' : ''} remaining.
+                </span>
+              </div>
+            )}
+
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.4, marginBottom: '24px' }}>
+              Are you sure you want to conclude and submit your answers? You will not be able to re-enter this examination once confirmed.
+            </p>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button onClick={handleCloseSubmitDialog} className="btn btn-secondary">
+                Return to Exam
+              </button>
+              <button id="btn-confirm-submit" onClick={handleConfirmSubmit} className="btn btn-primary">
+                Confirm & Submit
+              </button>
             </div>
           </div>
         </div>

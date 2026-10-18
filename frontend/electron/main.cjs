@@ -1,4 +1,4 @@
-const { app, BrowserWindow, session } = require('electron');
+const { app, BrowserWindow, session, ipcMain } = require('electron');
 const path = require('path');
 
 let mainWindow = null;
@@ -9,6 +9,7 @@ function createWindow() {
     height: 800,
     minWidth: 960,
     minHeight: 640,
+    fullscreenable: true,
     title: 'Athena - Examination & Proctoring Platform',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -31,6 +32,19 @@ function createWindow() {
     }
   });
 
+  // Emit fullscreen change events for proctoring integrity & UI synchronization
+  mainWindow.on('enter-full-screen', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('fullscreen-changed', true);
+    }
+  });
+
+  mainWindow.on('leave-full-screen', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('fullscreen-changed', false);
+    }
+  });
+
   // Load local Vite dev server on configured port 5180
   const devUrl = 'http://localhost:5180/';
   mainWindow.loadURL(devUrl);
@@ -49,11 +63,35 @@ function createWindow() {
   });
 }
 
+// Native window fullscreen IPC
+ipcMain.handle('set-fullscreen', (_event, flag) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setFullScreen(Boolean(flag));
+    return mainWindow.isFullScreen();
+  }
+  return false;
+});
+
+ipcMain.handle('is-fullscreen', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    return mainWindow.isFullScreen();
+  }
+  return false;
+});
+
 app.whenReady().then(() => {
-  // Handle media permissions for camera access in Electron
+  // Handle media and fullscreen permissions in Electron
+  const allowedPermissions = new Set([
+    'media',
+    'fullscreen',
+    'video-capture',
+    'audio-capture',
+    'display-capture',
+  ]);
+
   if (session.defaultSession) {
     session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-      if (permission === 'media') {
+      if (allowedPermissions.has(permission)) {
         callback(true);
       } else {
         callback(false);
@@ -61,10 +99,7 @@ app.whenReady().then(() => {
     });
 
     session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
-      if (permission === 'media') {
-        return true;
-      }
-      return false;
+      return allowedPermissions.has(permission);
     });
   }
 

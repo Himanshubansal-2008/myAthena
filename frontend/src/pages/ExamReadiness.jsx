@@ -30,6 +30,30 @@ export default function ExamReadiness() {
   const cameraStreamRef = useRef(null);
   const videoRef = useRef(null);
 
+  // --- Priority 3: Backend API Connectivity State ---
+  const [backendStatus, setBackendStatus] = useState('checking'); // 'connected' | 'disconnected' | 'checking'
+
+  useEffect(() => {
+    let isCancelled = false;
+    async function checkApi() {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3500);
+        const res = await fetch('http://localhost:5050/api/health', { signal: controller.signal });
+        clearTimeout(timeout);
+        if (!isCancelled) {
+          setBackendStatus(res.ok ? 'connected' : 'disconnected');
+        }
+      } catch {
+        if (!isCancelled) {
+          setBackendStatus('disconnected');
+        }
+      }
+    }
+    checkApi();
+    return () => { isCancelled = true; };
+  }, []);
+
   // --- Step 2: Fullscreen State ---
   const [isFullscreen, setIsFullscreen] = useState(Boolean(document.fullscreenElement));
   const [fullscreenError, setFullscreenError] = useState(null);
@@ -55,6 +79,15 @@ export default function ExamReadiness() {
 
   // Monitor fullscreen change events & cleanup on unmount
   useEffect(() => {
+    // Check initial Electron window fullscreen state
+    if (window.electronAPI && typeof window.electronAPI.isFullscreen === 'function') {
+      window.electronAPI.isFullscreen().then((full) => {
+        if (typeof full === 'boolean' && full) {
+          setIsFullscreen(true);
+        }
+      }).catch(() => {});
+    }
+
     const onFullscreenChange = () => {
       const isFull = Boolean(document.fullscreenElement || document.webkitFullscreenElement);
       setIsFullscreen(isFull);
@@ -66,9 +99,22 @@ export default function ExamReadiness() {
     document.addEventListener('fullscreenchange', onFullscreenChange);
     document.addEventListener('webkitfullscreenchange', onFullscreenChange);
 
+    let unsubscribeElectron = null;
+    if (window.electronAPI && typeof window.electronAPI.onFullscreenChange === 'function') {
+      unsubscribeElectron = window.electronAPI.onFullscreenChange((isFull) => {
+        setIsFullscreen(Boolean(isFull));
+        if (!isFull) {
+          setFullscreenError(null);
+        }
+      });
+    }
+
     return () => {
       document.removeEventListener('fullscreenchange', onFullscreenChange);
       document.removeEventListener('webkitfullscreenchange', onFullscreenChange);
+      if (unsubscribeElectron) {
+        unsubscribeElectron();
+      }
       stopCameraStream();
     };
   }, [stopCameraStream]);
@@ -148,6 +194,28 @@ export default function ExamReadiness() {
   const handleToggleFullscreen = async () => {
     setFullscreenError(null);
     try {
+      if (window.electronAPI && typeof window.electronAPI.setFullscreen === 'function') {
+        const nextState = !isFullscreen;
+        await window.electronAPI.setFullscreen(nextState);
+        setIsFullscreen(nextState);
+
+        // Also sync DOM fullscreen state if available
+        if (nextState) {
+          if (document.documentElement.requestFullscreen) {
+            document.documentElement.requestFullscreen().catch(() => {});
+          } else if (document.documentElement.webkitRequestFullscreen) {
+            document.documentElement.webkitRequestFullscreen().catch(() => {});
+          }
+        } else {
+          if (document.exitFullscreen) {
+            document.exitFullscreen().catch(() => {});
+          } else if (document.webkitExitFullscreen) {
+            document.webkitExitFullscreen().catch(() => {});
+          }
+        }
+        return;
+      }
+
       if (!document.fullscreenElement && !document.webkitFullscreenElement) {
         const elem = document.documentElement;
         if (elem.requestFullscreen) {
@@ -172,6 +240,9 @@ export default function ExamReadiness() {
 
   const handleBackToInstructions = () => {
     stopCameraStream();
+    if (window.electronAPI && typeof window.electronAPI.setFullscreen === 'function') {
+      window.electronAPI.setFullscreen(false).catch(() => {});
+    }
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {});
     }
@@ -185,7 +256,7 @@ export default function ExamReadiness() {
   const handleStartExam = () => {
     if (!allReady) return;
     // Navigate directly to the live examination room, preserving exam state
-    navigate(`/exam/${exam?.id || 'live'}`, { state: { exam } });
+    navigate(`/exam/${exam?.id || 'cs-401'}`, { state: { exam } });
   };
 
   return (
@@ -250,12 +321,32 @@ export default function ExamReadiness() {
       <main className="readiness-main-container">
         {/* Exam Title Banner */}
         <section className="readiness-card readiness-exam-banner">
-          <div className="readiness-exam-meta">
+          <div className="readiness-exam-meta" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
             <span className="readiness-code-pill font-mono">{exam?.code || 'CS-401'}</span>
             <span className="readiness-exam-dept">{exam?.subject || exam?.department || 'Assessment Session'}</span>
             <span className="readiness-lock-pill">
               <Lock size={12} />
               <span>Proctored Session</span>
+            </span>
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '2px 8px',
+              borderRadius: '10px',
+              fontSize: '11px',
+              fontWeight: 500,
+              background: backendStatus === 'connected' ? 'rgba(16, 185, 129, 0.1)' : backendStatus === 'checking' ? 'rgba(245, 158, 11, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+              border: `1px solid ${backendStatus === 'connected' ? 'rgba(16, 185, 129, 0.3)' : backendStatus === 'checking' ? 'rgba(245, 158, 11, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+              color: backendStatus === 'connected' ? '#065f46' : backendStatus === 'checking' ? '#92400e' : '#b91c1c',
+            }}>
+              <span style={{
+                width: '6px',
+                height: '6px',
+                borderRadius: '50%',
+                background: backendStatus === 'connected' ? '#10b981' : backendStatus === 'checking' ? '#f59e0b' : '#ef4444',
+              }} />
+              <span>{backendStatus === 'connected' ? 'API Server Online' : backendStatus === 'checking' ? 'Checking Server...' : 'API Server Offline'}</span>
             </span>
           </div>
           <h1 className="readiness-exam-title">
