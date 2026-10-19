@@ -69,6 +69,7 @@ export default function ExamInstructions() {
 
   const [acknowledged, setAcknowledged] = useState(false);
   const [alreadySubmitted, setAlreadySubmitted] = useState(false);
+  const [isInProgress, setIsInProgress] = useState(false);
 
   // Read passed exam data from navigation state if available, or fallback to sensible default
   const passedExam = location.state?.exam;
@@ -98,8 +99,12 @@ export default function ExamInstructions() {
           },
         });
         const data = await res.json();
-        if (!isCancelled && !res.ok && data.code === 'ALREADY_SUBMITTED') {
-          setAlreadySubmitted(true);
+        if (!isCancelled) {
+          if (!res.ok && data.code === 'ALREADY_SUBMITTED') {
+            setAlreadySubmitted(true);
+          } else if (res.ok && data.isInProgress) {
+            setIsInProgress(true);
+          }
         }
       } catch (err) {
         console.warn('Attempt verification error in instructions:', err);
@@ -521,7 +526,7 @@ export default function ExamInstructions() {
               }
               aria-disabled={!acknowledged || alreadySubmitted}
             >
-              <span>{alreadySubmitted ? 'Attempt Already Completed' : 'Continue to System Check'}</span>
+              <span>{alreadySubmitted ? 'Attempt Already Completed' : isInProgress ? 'Proceed to Resume Exam' : 'Continue to System Check'}</span>
               <ArrowRight size={16} />
             </button>
           </div>

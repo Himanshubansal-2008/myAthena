@@ -21,6 +21,7 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState(location.state?.tab || 'exams'); // 'exams' | 'history'
   const [pastResults, setPastResults] = useState([]);
   const [backendExams, setBackendExams] = useState([]);
+  const [activeSession, setActiveSession] = useState(null);
   const [loadingResults, setLoadingResults] = useState(false);
 
   useEffect(() => {
@@ -33,11 +34,14 @@ export default function Dashboard() {
     if (!token) return;
     setLoadingResults(true);
     try {
-      const [resultsRes, examsRes] = await Promise.all([
+      const [resultsRes, examsRes, activeSessionRes] = await Promise.all([
         fetch('http://localhost:5050/api/exams/results/my-results', {
           headers: { Authorization: `Bearer ${token}` },
         }),
         fetch('http://localhost:5050/api/exams', {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+        fetch('http://localhost:5050/api/exams/session/active', {
           headers: { Authorization: `Bearer ${token}` },
         }),
       ]);
@@ -51,6 +55,13 @@ export default function Dashboard() {
         const examsData = await examsRes.json();
         setBackendExams(examsData.exams || []);
       }
+
+      if (activeSessionRes && activeSessionRes.ok) {
+        const sessionData = await activeSessionRes.json();
+        setActiveSession(sessionData.hasActiveSession ? sessionData.session : null);
+      } else {
+        setActiveSession(null);
+      }
     } catch (err) {
       console.warn('Dashboard fetch error:', err);
     } finally {
@@ -61,6 +72,15 @@ export default function Dashboard() {
   useEffect(() => {
     fetchExamsAndResults();
   }, [fetchExamsAndResults, activeTab]);
+
+  const handleResumeExam = (examId) => {
+    const targetExam =
+      backendExams.find((e) => (e.id || '').toLowerCase() === (examId || '').toLowerCase()) ||
+      examinations.find((e) => (e.id || '').toLowerCase() === (examId || '').toLowerCase()) ||
+      { id: examId };
+
+    navigate(`/exam/${examId}`, { state: { exam: targetExam, resume: true } });
+  };
 
   const handleLogout = () => {
     logout();
@@ -225,6 +245,40 @@ export default function Dashboard() {
                 </div>
               </div>
 
+              {activeSession && (
+                <div className="surface-card dashboard-resume-banner" id="dashboard-active-session-banner">
+                  <div className="dashboard-resume-info">
+                    <div className="dashboard-resume-icon-box">
+                      <Clock size={20} className="pulse-amber" />
+                    </div>
+                    <div>
+                      <div className="dashboard-resume-tag">
+                        <span className="status-dot status-dot-amber"></span>
+                        INTERRUPTED SESSION DETECTED
+                      </div>
+                      <h3 className="dashboard-resume-title">
+                        {activeSession.examCode}: {activeSession.examTitle}
+                      </h3>
+                      <p className="dashboard-resume-subtitle">
+                        Progress saved ({activeSession.answeredCount} answered of {activeSession.totalQuestions} questions) •{' '}
+                        {Math.floor(activeSession.remainingSeconds / 60)}m {activeSession.remainingSeconds % 60}s remaining
+                      </p>
+                    </div>
+                  </div>
+                  <div className="dashboard-resume-actions">
+                    <button
+                      id="btn-resume-exam-banner"
+                      onClick={() => handleResumeExam(activeSession.examId)}
+                      className="btn btn-warning btn-resume-banner"
+                    >
+                      <RotateCcw size={14} />
+                      <span>Resume Exam</span>
+                      <ArrowRight size={14} />
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {upcomingExams.length === 0 ? (
                 <div className="surface-card" style={{ padding: '48px 32px', textAlign: 'center' }}>
                   <div
@@ -260,6 +314,13 @@ export default function Dashboard() {
                 <div className="exam-card-list">
                   {upcomingExams.map((exam) => {
                     const isLive = exam.status === 'AVAILABLE_NOW';
+                    const isResumable =
+                      (activeSession && (activeSession.examId || '').toLowerCase() === (exam.id || '').toLowerCase()) ||
+                      (() => {
+                        const be = backendExams.find((e) => (e.id || '').toLowerCase() === (exam.id || '').toLowerCase());
+                        return be?.attempt?.isInProgress;
+                      })();
+
                     return (
                       <div key={exam.id} className="surface-card exam-item-card">
                         <div className="exam-top-info">
@@ -272,7 +333,12 @@ export default function Dashboard() {
                             </span>
                           </div>
 
-                          {isLive ? (
+                          {isResumable ? (
+                            <div className="status-pill status-amber">
+                              <span className="status-dot status-dot-amber"></span>
+                              In Progress • Resume Available
+                            </div>
+                          ) : isLive ? (
                             <div className="status-pill status-emerald">
                               <span className="status-dot"></span>
                               Ready for Attempt
@@ -318,8 +384,20 @@ export default function Dashboard() {
                             <span>Proctored Assessment • Fullscreen Desktop Mode Enforced</span>
                           </div>
 
-                          {isLive ? (
+                          {isResumable ? (
                             <button
+                              id={`btn-resume-exam-${exam.id}`}
+                              onClick={() => handleResumeExam(exam.id)}
+                              className="btn btn-warning"
+                              style={{ padding: '9px 18px', display: 'inline-flex', alignItems: 'center', gap: '8px' }}
+                            >
+                              <RotateCcw size={14} />
+                              <span>Resume Exam</span>
+                              <ArrowRight size={14} />
+                            </button>
+                          ) : isLive ? (
+                            <button
+                              id={`btn-start-exam-${exam.id}`}
                               onClick={() => navigate('/instructions', { state: { exam } })}
                               className="btn btn-primary"
                               style={{ padding: '9px 18px' }}

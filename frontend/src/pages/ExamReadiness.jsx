@@ -34,6 +34,7 @@ export default function ExamReadiness() {
   // --- Priority 3: Backend API Connectivity & Attempt Status State ---
   const [backendStatus, setBackendStatus] = useState('checking'); // 'connected' | 'disconnected' | 'checking'
   const [alreadySubmitted, setAlreadySubmitted] = useState(false);
+  const [isInProgress, setIsInProgress] = useState(false);
 
   useEffect(() => {
     let isCancelled = false;
@@ -61,8 +62,12 @@ export default function ExamReadiness() {
             },
           });
           const data = await res.json();
-          if (!isCancelled && !res.ok && data.code === 'ALREADY_SUBMITTED') {
-            setAlreadySubmitted(true);
+          if (!isCancelled) {
+            if (!res.ok && data.code === 'ALREADY_SUBMITTED') {
+              setAlreadySubmitted(true);
+            } else if (res.ok && data.isInProgress) {
+              setIsInProgress(true);
+            }
           }
         } catch (e) {
           console.warn('Attempt check failed in readiness:', e);
@@ -639,7 +644,7 @@ export default function ExamReadiness() {
               }
               aria-disabled={!allReady}
             >
-              <span>Start Examination</span>
+              <span>{isInProgress ? 'Resume Examination' : 'Start Examination'}</span>
               <ArrowRight size={16} />
             </button>
           </div>

@@ -241,7 +241,18 @@ export default function ExamRoom() {
           setTimeLeft(fallbackRemaining);
         }
 
-        setCurrentQuestionIndex(0);
+        // Restore question position: resume at the last saved question or first unanswered question
+        let resumeIndex = 0;
+        if (data.lastQuestionId && loadedQuestions.length > 0) {
+          const foundIdx = loadedQuestions.findIndex((q) => q.id === data.lastQuestionId);
+          if (foundIdx !== -1) resumeIndex = foundIdx;
+        } else if (data.answers && typeof data.answers === 'object' && Object.keys(data.answers).length > 0 && loadedQuestions.length > 0) {
+          const firstUnanswered = loadedQuestions.findIndex(
+            (q) => data.answers[q.id] === undefined || data.answers[q.id] === null || data.answers[q.id] === ''
+          );
+          if (firstUnanswered !== -1) resumeIndex = firstUnanswered;
+        }
+        setCurrentQuestionIndex(resumeIndex);
       } catch (err) {
         if (!isCancelled) {
           console.error('Failed to retrieve live examination questions:', err);

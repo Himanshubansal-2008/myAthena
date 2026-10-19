@@ -328,6 +328,172 @@ router.get("/", authenticateToken, async (req, res) => {
 });
 
 /**
+ * GET /api/exams/session/active
+ * Detect any unfinished, in-progress examination session for authenticated candidate
+ */
+router.get("/session/active", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    const attempts = await prisma.attempt.findMany({
+      where: {
+        userId,
+        status: "IN_PROGRESS",
+      },
+      orderBy: { startedAt: "desc" },
+      include: {
+        exam: {
+          select: {
+            id: true,
+            title: true,
+            description: true,
+            durationMinutes: true,
+            totalMarks: true,
+            negativeMarking: true,
+            status: true,
+            _count: {
+              select: { questions: true },
+            },
+          },
+        },
+        answers: {
+          orderBy: { savedAt: "desc" },
+          take: 1,
+        },
+        _count: {
+          select: { answers: true },
+        },
+      },
+    });
+
+    const activeAttempt = attempts[0];
+    if (!activeAttempt) {
+      return res.json({ hasActiveSession: false, session: null });
+    }
+
+    const serverNow = new Date();
+    // Verify session expiry
+    if (activeAttempt.deadlineAt && serverNow > new Date(activeAttempt.deadlineAt)) {
+      const graded = await autoSubmitAttempt(activeAttempt.id);
+      return res.json({
+        hasActiveSession: false,
+        session: null,
+        expiredSession: {
+          attemptId: activeAttempt.id,
+          examId: activeAttempt.examId,
+          status: "AUTO_SUBMITTED",
+          result: graded,
+        },
+      });
+    }
+
+    const remainingSeconds = Math.max(
+      0,
+      Math.floor((new Date(activeAttempt.deadlineAt).getTime() - serverNow.getTime()) / 1000)
+    );
+
+    const lastQuestionId = activeAttempt.answers?.[0]?.questionId || null;
+
+    res.json({
+      hasActiveSession: true,
+      session: {
+        attemptId: activeAttempt.id,
+        examId: activeAttempt.exam.id,
+        examTitle: activeAttempt.exam.title,
+        examCode: activeAttempt.exam.id.toUpperCase(),
+        department: activeAttempt.exam.description,
+        startedAt: activeAttempt.startedAt,
+        deadlineAt: activeAttempt.deadlineAt,
+        remainingSeconds,
+        serverTime: serverNow.toISOString(),
+        durationMinutes: activeAttempt.exam.durationMinutes,
+        totalQuestions: activeAttempt.exam._count?.questions || 0,
+        answeredCount: activeAttempt._count?.answers || 0,
+        lastQuestionId,
+        exam: activeAttempt.exam,
+      },
+    });
+  } catch (error) {
+    console.error("Detect active session error:", error);
+    res.status(500).json({ message: "Unable to retrieve active session." });
+  }
+});
+
+/**
+ * GET /api/exams/session/:attemptId
+ * Validate and retrieve specific session state with strict candidate ownership verification
+ */
+router.get("/session/:attemptId", authenticateToken, async (req, res) => {
+  try {
+    const { attemptId } = req.params;
+    const userId = req.user.userId;
+
+    const attempt = await prisma.attempt.findUnique({
+      where: { id: attemptId },
+      include: {
+        exam: true,
+        answers: true,
+      },
+    });
+
+    if (!attempt) {
+      return res.status(404).json({
+        message: "Examination session not found.",
+        code: "ATTEMPT_NOT_FOUND",
+      });
+    }
+
+    // Security check: Candidate can only access their own session
+    if (attempt.userId !== userId) {
+      return res.status(403).json({
+        message: "Unauthorized: You do not own this examination session.",
+        code: "FORBIDDEN",
+      });
+    }
+
+    const serverNow = new Date();
+    const isExpired = Boolean(attempt.deadlineAt) && serverNow > new Date(attempt.deadlineAt);
+
+    if (isExpired && attempt.status === "IN_PROGRESS") {
+      const graded = await autoSubmitAttempt(attempt.id);
+      return res.status(403).json({
+        message: "Assessment deadline has expired.",
+        code: "ALREADY_SUBMITTED",
+        isTimeout: true,
+        attemptId: attempt.id,
+        result: graded,
+      });
+    }
+
+    if (attempt.status === "SUBMITTED" || attempt.status === "AUTO_SUBMITTED") {
+      return res.status(403).json({
+        message: "This examination has already been submitted.",
+        code: "ALREADY_SUBMITTED",
+        attemptId: attempt.id,
+      });
+    }
+
+    const remainingSeconds = attempt.deadlineAt
+      ? Math.max(0, Math.floor((new Date(attempt.deadlineAt).getTime() - serverNow.getTime()) / 1000))
+      : 0;
+
+    res.json({
+      attemptId: attempt.id,
+      examId: attempt.examId,
+      status: attempt.status,
+      startedAt: attempt.startedAt,
+      deadlineAt: attempt.deadlineAt,
+      remainingSeconds,
+      serverTime: serverNow.toISOString(),
+      answeredCount: attempt.answers.length,
+    });
+  } catch (error) {
+    console.error("Retrieve attempt session error:", error);
+    res.status(500).json({ message: "Unable to retrieve session." });
+  }
+});
+
+/**
  * GET /api/exams/:id
  * Retrieve live exam details, questions (sanitized without answer keys),
  * and candidate active attempt session.
@@ -356,6 +522,19 @@ router.get("/:id", authenticateToken, async (req, res) => {
       });
     }
 
+    // Security check: Verify candidate ownership if attemptId query parameter is provided
+    if (req.query.attemptId) {
+      const specifiedAttempt = await prisma.attempt.findUnique({
+        where: { id: req.query.attemptId },
+      });
+      if (specifiedAttempt && specifiedAttempt.userId !== userId) {
+        return res.status(403).json({
+          message: "Unauthorized: You do not own this examination session.",
+          code: "FORBIDDEN",
+        });
+      }
+    }
+
     // Single-attempt restriction check
     const existingAttempts = await prisma.attempt.findMany({
       where: {
@@ -377,6 +556,7 @@ router.get("/:id", authenticateToken, async (req, res) => {
       return res.status(403).json({
         message: "You have already completed and submitted this examination.",
         code: "ALREADY_SUBMITTED",
+        isTimeout: submittedAttempt.status === "AUTO_SUBMITTED",
         attemptId: submittedAttempt.id,
         submittedAt: submittedAttempt.submittedAt,
         result: submittedAttempt.result,
@@ -483,10 +663,16 @@ router.get("/:id", authenticateToken, async (req, res) => {
       Math.floor((new Date(activeAttempt.deadlineAt).getTime() - serverNow.getTime()) / 1000)
     );
 
+    const sortedAnswers = (activeAttempt.answers || []).slice().sort(
+      (a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime()
+    );
+    const lastQuestionId = sortedAnswers.length > 0 ? sortedAnswers[0].questionId : null;
+
     res.json({
       serverTime: serverNow.toISOString(),
       exam: examPayload,
       questions,
+      lastQuestionId,
       attempt: {
         id: activeAttempt.id,
         status: activeAttempt.status,
@@ -517,6 +703,18 @@ router.get("/:id/timer", authenticateToken, async (req, res) => {
   try {
     const examId = req.params.id;
     const userId = req.user.userId;
+
+    if (req.query.attemptId) {
+      const specifiedAttempt = await prisma.attempt.findUnique({
+        where: { id: req.query.attemptId },
+      });
+      if (specifiedAttempt && specifiedAttempt.userId !== userId) {
+        return res.status(403).json({
+          message: "Unauthorized: You do not own this examination session.",
+          code: "FORBIDDEN",
+        });
+      }
+    }
 
     const attempts = await prisma.attempt.findMany({
       where: { userId, examId },
@@ -620,10 +818,28 @@ router.post("/:id/answer", authenticateToken, async (req, res) => {
       orderBy: { startedAt: "desc" },
     });
 
-    // If attemptId was passed, match that specific attempt; otherwise target most recent
-    const targetAttempt = attemptId
-      ? existingAttempts.find((a) => a.id === attemptId)
-      : existingAttempts[0];
+    // If attemptId was passed, verify ownership strictly; otherwise target most recent
+    let targetAttempt;
+    if (attemptId) {
+      const specifiedAttempt = await prisma.attempt.findUnique({
+        where: { id: attemptId },
+      });
+      if (!specifiedAttempt) {
+        return res.status(404).json({
+          message: "Examination attempt not found.",
+          code: "ATTEMPT_NOT_FOUND",
+        });
+      }
+      if (specifiedAttempt.userId !== userId) {
+        return res.status(403).json({
+          message: "Unauthorized: You do not own this examination session.",
+          code: "FORBIDDEN",
+        });
+      }
+      targetAttempt = specifiedAttempt;
+    } else {
+      targetAttempt = existingAttempts[0];
+    }
 
     if (!targetAttempt) {
       return res.status(404).json({
@@ -757,7 +973,26 @@ router.post("/:id/submit", authenticateToken, async (req, res) => {
   try {
     const examId = req.params.id;
     const userId = req.user.userId;
-    const { answers, isTimeout } = req.body;
+    const { answers, isTimeout, attemptId } = req.body;
+
+    // Security check: Verify session ownership if attemptId was passed
+    if (attemptId) {
+      const specifiedAttempt = await prisma.attempt.findUnique({
+        where: { id: attemptId },
+      });
+      if (!specifiedAttempt) {
+        return res.status(404).json({
+          message: "Examination attempt not found.",
+          code: "ATTEMPT_NOT_FOUND",
+        });
+      }
+      if (specifiedAttempt.userId !== userId) {
+        return res.status(403).json({
+          message: "Unauthorized: You do not own this examination session.",
+          code: "FORBIDDEN",
+        });
+      }
+    }
 
     // Use transaction for safe atomic submission and grading
     const graded = await prisma.$transaction(async (tx) => {
