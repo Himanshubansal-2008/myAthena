@@ -91,7 +91,7 @@ export default function ExamInstructions() {
       if (!token) return;
       try {
         const examId = exam?.id || 'cs-401';
-        const res = await fetch(`http://localhost:5050/api/exams/${examId}`, {
+        const res = await fetch(`http://localhost:5050/api/exams/${examId}?checkOnly=true`, {
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,

@@ -5,6 +5,103 @@ const { authenticateToken } = require("../middleware/authMiddleware");
 const router = express.Router();
 
 /**
+ * Authoritatively grades an attempt, persists its Result record,
+ * and sets status to AUTO_SUBMITTED with submittedAt timestamp.
+ * Idempotent: returns existing result if already calculated.
+ */
+async function autoSubmitAttempt(attemptId, externalTx = null) {
+  const runner = async (tx) => {
+    const fullAttempt = await tx.attempt.findUnique({
+      where: { id: attemptId },
+      include: {
+        exam: { include: { questions: true } },
+        answers: true,
+        result: true,
+      },
+    });
+
+    if (!fullAttempt) return null;
+
+    if (
+      (fullAttempt.status === "SUBMITTED" || fullAttempt.status === "AUTO_SUBMITTED") &&
+      fullAttempt.result
+    ) {
+      return fullAttempt.result;
+    }
+
+    const answersMap = {};
+    if (fullAttempt.answers) {
+      fullAttempt.answers.forEach((a) => {
+        answersMap[a.questionId] = a.selectedOption;
+      });
+    }
+
+    const questions = fullAttempt?.exam?.questions || [];
+    let totalMarks = fullAttempt?.exam?.totalMarks || 100;
+    let negativeMarking = fullAttempt?.exam?.negativeMarking || 0;
+    let score = 0;
+    let correctCount = 0;
+    let wrongCount = 0;
+    let unansweredCount = 0;
+
+    questions.forEach((q) => {
+      const candidateChoice = answersMap[q.id];
+      if (candidateChoice === undefined || candidateChoice === null || candidateChoice === "") {
+        unansweredCount++;
+      } else {
+        const isCorrect =
+          String(candidateChoice) === String(q.correctAnswer) ||
+          (Array.isArray(q.options) && q.options[Number(candidateChoice)] === q.correctAnswer);
+        if (isCorrect) {
+          correctCount++;
+          score += q.marks;
+        } else {
+          wrongCount++;
+          score -= negativeMarking;
+        }
+      }
+    });
+
+    const finalScore = Math.max(0, Number(score.toFixed(2)));
+
+    const result = await tx.result.upsert({
+      where: { attemptId },
+      update: {
+        score: finalScore,
+        totalMarks,
+        correctCount,
+        wrongCount,
+        unansweredCount,
+        calculatedAt: new Date(),
+      },
+      create: {
+        attemptId,
+        score: finalScore,
+        totalMarks,
+        correctCount,
+        wrongCount,
+        unansweredCount,
+      },
+    });
+
+    await tx.attempt.update({
+      where: { id: attemptId },
+      data: {
+        status: "AUTO_SUBMITTED",
+        submittedAt: new Date(),
+      },
+    });
+
+    return result;
+  };
+
+  if (externalTx) {
+    return await runner(externalTx);
+  }
+  return await prisma.$transaction(runner);
+}
+
+/**
  * GET /api/exams/results/my-results
  * Retrieve all completed examination results for authenticated candidate
  */
@@ -180,6 +277,20 @@ router.get("/", authenticateToken, async (req, res) => {
         where: { userId: req.user.userId },
         include: { result: true },
       });
+      // Synchronize any timed out in-progress attempts
+      for (const att of attempts) {
+        if (att.status === "IN_PROGRESS" && att.deadlineAt && new Date() > new Date(att.deadlineAt)) {
+          try {
+            const gradedResult = await autoSubmitAttempt(att.id);
+            att.status = "AUTO_SUBMITTED";
+            att.submittedAt = new Date();
+            att.result = gradedResult;
+          } catch (e) {
+            console.error("Auto submit on list exams error:", e);
+          }
+        }
+      }
+
       attemptsByUser = attempts.reduce((acc, att) => {
         acc[att.examId] = att;
         return acc;
@@ -278,83 +389,33 @@ router.get("/:id", authenticateToken, async (req, res) => {
     // Check if active attempt has expired (timed out)
     if (activeAttempt && activeAttempt.deadlineAt && new Date() > new Date(activeAttempt.deadlineAt)) {
       // Auto-submit the expired attempt immediately
-      await prisma.$transaction(async (tx) => {
-        const fullAttempt = await tx.attempt.findUnique({
-          where: { id: activeAttempt.id },
-          include: {
-            exam: { include: { questions: true } },
-            answers: true,
-          },
-        });
-
-        const answersMap = {};
-        if (fullAttempt && fullAttempt.answers) {
-          fullAttempt.answers.forEach((a) => {
-            answersMap[a.questionId] = a.selectedOption;
-          });
-        }
-
-        const questions = fullAttempt?.exam?.questions || [];
-        let totalMarks = fullAttempt?.exam?.totalMarks || 100;
-        let negativeMarking = fullAttempt?.exam?.negativeMarking || 0;
-        let score = 0;
-        let correctCount = 0;
-        let wrongCount = 0;
-        let unansweredCount = 0;
-
-        questions.forEach((q) => {
-          const candidateChoice = answersMap[q.id];
-          if (candidateChoice === undefined || candidateChoice === null || candidateChoice === "") {
-            unansweredCount++;
-          } else {
-            const isCorrect =
-              String(candidateChoice) === String(q.correctAnswer) ||
-              (Array.isArray(q.options) && q.options[Number(candidateChoice)] === q.correctAnswer);
-            if (isCorrect) {
-              correctCount++;
-              score += q.marks;
-            } else {
-              wrongCount++;
-              score -= negativeMarking;
-            }
-          }
-        });
-
-        const finalScore = Math.max(0, Number(score.toFixed(2)));
-
-        await tx.result.upsert({
-          where: { attemptId: activeAttempt.id },
-          update: {
-            score: finalScore,
-            totalMarks,
-            correctCount,
-            wrongCount,
-            unansweredCount,
-            calculatedAt: new Date(),
-          },
-          create: {
-            attemptId: activeAttempt.id,
-            score: finalScore,
-            totalMarks,
-            correctCount,
-            wrongCount,
-            unansweredCount,
-          },
-        });
-
-        await tx.attempt.update({
-          where: { id: activeAttempt.id },
-          data: {
-            status: "AUTO_SUBMITTED",
-            submittedAt: new Date(),
-          },
-        });
+      const gradedResult = await autoSubmitAttempt(activeAttempt.id);
+      const updated = await prisma.attempt.findUnique({
+        where: { id: activeAttempt.id },
       });
 
       return res.status(403).json({
         message: "Your examination deadline has elapsed and the session was automatically submitted.",
         code: "ALREADY_SUBMITTED",
         isTimeout: true,
+        attemptId: activeAttempt.id,
+        submittedAt: updated?.submittedAt || new Date(),
+        result: gradedResult,
+      });
+    }
+
+    if (req.query.checkOnly === "true") {
+      return res.json({
+        canAttempt: true,
+        hasActiveAttempt: Boolean(activeAttempt),
+        attempt: activeAttempt
+          ? {
+              id: activeAttempt.id,
+              status: activeAttempt.status,
+              startedAt: activeAttempt.startedAt,
+              deadlineAt: activeAttempt.deadlineAt,
+            }
+          : null,
       });
     }
 
@@ -416,7 +477,14 @@ router.get("/:id", authenticateToken, async (req, res) => {
       questions,
     };
 
+    const serverNow = new Date();
+    const remainingSeconds = Math.max(
+      0,
+      Math.floor((new Date(activeAttempt.deadlineAt).getTime() - serverNow.getTime()) / 1000)
+    );
+
     res.json({
+      serverTime: serverNow.toISOString(),
       exam: examPayload,
       questions,
       attempt: {
@@ -424,6 +492,10 @@ router.get("/:id", authenticateToken, async (req, res) => {
         status: activeAttempt.status,
         startedAt: activeAttempt.startedAt,
         deadlineAt: activeAttempt.deadlineAt,
+        serverTime: serverNow.toISOString(),
+        remainingSeconds,
+        durationMinutes: exam.durationMinutes,
+        totalSeconds: (exam.durationMinutes || 60) * 60,
       },
       answers: answersMap,
       flags: flagsMap,
@@ -434,6 +506,79 @@ router.get("/:id", authenticateToken, async (req, res) => {
       message: "An unexpected error occurred while loading the examination.",
       code: "SERVER_ERROR",
     });
+  }
+});
+
+/**
+ * GET /api/exams/:id/timer
+ * Retrieve authoritative server timer state and remaining countdown
+ */
+router.get("/:id/timer", authenticateToken, async (req, res) => {
+  try {
+    const examId = req.params.id;
+    const userId = req.user.userId;
+
+    const attempts = await prisma.attempt.findMany({
+      where: { userId, examId },
+      orderBy: { startedAt: "desc" },
+      include: { result: true },
+    });
+
+    const submitted = attempts.find(
+      (a) => a.status === "SUBMITTED" || a.status === "AUTO_SUBMITTED"
+    );
+
+    if (submitted) {
+      return res.json({
+        serverTime: new Date().toISOString(),
+        attemptId: submitted.id,
+        status: submitted.status,
+        isExpired: true,
+        remainingSeconds: 0,
+        result: submitted.result,
+      });
+    }
+
+    const activeAttempt = attempts.find((a) => a.status === "IN_PROGRESS");
+    if (!activeAttempt) {
+      return res.status(404).json({
+        message: "No active examination session found.",
+        code: "ATTEMPT_NOT_FOUND",
+      });
+    }
+
+    const serverNow = new Date();
+    const isTimedOut = Boolean(activeAttempt.deadlineAt) && serverNow > new Date(activeAttempt.deadlineAt);
+
+    if (isTimedOut) {
+      const gradedResult = await autoSubmitAttempt(activeAttempt.id);
+      return res.json({
+        serverTime: serverNow.toISOString(),
+        attemptId: activeAttempt.id,
+        status: "AUTO_SUBMITTED",
+        isExpired: true,
+        remainingSeconds: 0,
+        result: gradedResult,
+      });
+    }
+
+    const remainingSeconds = Math.max(
+      0,
+      Math.floor((new Date(activeAttempt.deadlineAt).getTime() - serverNow.getTime()) / 1000)
+    );
+
+    res.json({
+      serverTime: serverNow.toISOString(),
+      attemptId: activeAttempt.id,
+      startedAt: activeAttempt.startedAt,
+      deadlineAt: activeAttempt.deadlineAt,
+      remainingSeconds,
+      status: activeAttempt.status,
+      isExpired: false,
+    });
+  } catch (error) {
+    console.error("Timer sync error:", error);
+    res.status(500).json({ message: "Failed to synchronize assessment timer." });
   }
 });
 
@@ -503,9 +648,17 @@ router.post("/:id/answer", authenticateToken, async (req, res) => {
     }
 
     if (targetAttempt.deadlineAt && new Date() > new Date(targetAttempt.deadlineAt)) {
+      try {
+        await autoSubmitAttempt(targetAttempt.id);
+      } catch (e) {
+        console.error("Auto submit on answer expiry error:", e);
+      }
+
       return res.status(403).json({
         message: "Assessment time has expired. Answers can no longer be recorded.",
         code: "EXAM_TIMEOUT",
+        serverTime: new Date().toISOString(),
+        remainingSeconds: 0,
       });
     }
 
@@ -579,7 +732,17 @@ router.post("/:id/answer", authenticateToken, async (req, res) => {
       trackAnswerUpdate(updateKey, reqTimestamp, reqSequence || 0);
     }
 
-    res.json({ ok: true, answer });
+    const serverNow = new Date();
+    const remainingSeconds = targetAttempt.deadlineAt
+      ? Math.max(0, Math.floor((new Date(targetAttempt.deadlineAt).getTime() - serverNow.getTime()) / 1000))
+      : null;
+
+    res.json({
+      ok: true,
+      answer,
+      serverTime: serverNow.toISOString(),
+      remainingSeconds,
+    });
   } catch (error) {
     console.error("Save answer error:", error);
     res.status(500).json({ message: "Failed to persist answer choice." });
@@ -632,8 +795,12 @@ router.post("/:id/submit", authenticateToken, async (req, res) => {
         throw { status: 404, message: "No active examination attempt found to submit." };
       }
 
-      // Persist any final answers passed in body
-      if (answers && typeof answers === "object") {
+      const isExpired =
+        Boolean(activeAttempt.deadlineAt) && new Date() > new Date(activeAttempt.deadlineAt);
+      const isAutoSubmitted = Boolean(isTimeout) || isExpired;
+
+      // Persist any final answers passed in body ONLY IF NOT expired
+      if (!isAutoSubmitted && answers && typeof answers === "object") {
         for (const [qId, optVal] of Object.entries(answers)) {
           if (optVal !== undefined && optVal !== null) {
             await tx.attemptAnswer.upsert({
@@ -716,10 +883,6 @@ router.post("/:id/submit", authenticateToken, async (req, res) => {
           unansweredCount,
         },
       });
-
-      const isAutoSubmitted =
-        Boolean(isTimeout) ||
-        (Boolean(activeAttempt.deadlineAt) && new Date() > new Date(activeAttempt.deadlineAt));
 
       // Update Attempt status to SUBMITTED or AUTO_SUBMITTED
       const concludedAttempt = await tx.attempt.update({

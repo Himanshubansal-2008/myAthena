@@ -68,6 +68,13 @@ export default function ExamRoom() {
   const [deadlineTime, setDeadlineTime] = useState(null);
   const [timeLeft, setTimeLeft] = useState(null);
 
+  // Server-Authoritative Timer & Clock-Tamper Protection Refs
+  const serverDeadlineMsRef = useRef(null);
+  const serverTimeOffsetRef = useRef(0);
+  const syncMonotonicRef = useRef(null);
+  const syncRemainingSecondsRef = useRef(null);
+  const isResyncingTimerRef = useRef(false);
+
   // Safeguard Refs to prevent double submission or race conditions
   const isSubmittingRef = useRef(false);
   const isSubmittedRef = useRef(false);
@@ -156,6 +163,21 @@ export default function ExamRoom() {
         if (isCancelled) return;
 
         if (!response.ok) {
+          if (data.code === 'ALREADY_SUBMITTED' && data.isTimeout) {
+            if (cameraStreamRef.current) {
+              cameraStreamRef.current.getTracks().forEach((t) => t.stop());
+              cameraStreamRef.current = null;
+            }
+            if (data.result) {
+              setSubmissionResult(data.result);
+            }
+            setIsTimeout(true);
+            setIsSubmitted(true);
+            isSubmittedRef.current = true;
+            setLoading(false);
+            return;
+          }
+
           setError({
             message: data.message || 'Unable to load examination session.',
             code: data.code || 'LOAD_ERROR',
@@ -191,12 +213,32 @@ export default function ExamRoom() {
           setFlaggedQuestions(data.flags);
         }
 
-        // Initialize deadline timer
+        // Initialize authoritative server countdown timer
         if (data.attempt?.deadlineAt) {
-          setDeadlineTime(new Date(data.attempt.deadlineAt).getTime());
+          const deadlineMs = new Date(data.attempt.deadlineAt).getTime();
+          const serverTimeMs = data.serverTime || data.attempt?.serverTime
+            ? new Date(data.serverTime || data.attempt.serverTime).getTime()
+            : Date.now();
+          const remainingSec = typeof data.attempt?.remainingSeconds === 'number'
+            ? data.attempt.remainingSeconds
+            : Math.max(0, Math.floor((deadlineMs - serverTimeMs) / 1000));
+
+          serverDeadlineMsRef.current = deadlineMs;
+          serverTimeOffsetRef.current = serverTimeMs - Date.now();
+          syncMonotonicRef.current = performance.now();
+          syncRemainingSecondsRef.current = remainingSec;
+
+          setDeadlineTime(deadlineMs);
+          setTimeLeft(remainingSec);
         } else {
           const durationMinutes = data.exam?.durationMinutes || 90;
-          setDeadlineTime(Date.now() + durationMinutes * 60 * 1000);
+          const fallbackRemaining = durationMinutes * 60;
+          serverDeadlineMsRef.current = Date.now() + fallbackRemaining * 1000;
+          serverTimeOffsetRef.current = 0;
+          syncMonotonicRef.current = performance.now();
+          syncRemainingSecondsRef.current = fallbackRemaining;
+          setDeadlineTime(serverDeadlineMsRef.current);
+          setTimeLeft(fallbackRemaining);
         }
 
         setCurrentQuestionIndex(0);
@@ -243,23 +285,23 @@ export default function ExamRoom() {
         }),
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (cameraStreamRef.current) {
         cameraStreamRef.current.getTracks().forEach((t) => t.stop());
         cameraStreamRef.current = null;
       }
 
-      if (response.ok) {
+      if (response.ok || response.status === 200) {
         setSubmissionResult(data.result);
         setIsSubmitted(true);
         isSubmittedRef.current = true;
       } else if (response.status === 403 || data.code === 'ALREADY_SUBMITTED') {
-        setError({
-          message: data.message || 'Assessment deadline has expired and answers were recorded.',
-          code: 'ALREADY_SUBMITTED',
-          status: response.status,
-        });
+        if (data.result) {
+          setSubmissionResult(data.result);
+        }
+        setIsSubmitted(true);
+        isSubmittedRef.current = true;
       }
     } catch (err) {
       console.error('Timeout auto-submit error:', err);
@@ -272,12 +314,76 @@ export default function ExamRoom() {
     }
   }, [examId, token]);
 
-  // Countdown Timer Tick Effect
+  // Synchronize timer with authoritative server state
+  const syncWithServerTimer = useCallback(async () => {
+    if (!token || !examId || isSubmittingRef.current || isSubmittedRef.current || isResyncingTimerRef.current) {
+      return;
+    }
+
+    isResyncingTimerRef.current = true;
+    try {
+      const res = await fetch(`${API_BASE_URL}/exams/${examId}/timer`, {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!res.ok) {
+        if (res.status === 403) {
+          handleTimeoutSubmit();
+        }
+        return;
+      }
+
+      const data = await res.json();
+      if (data.isExpired || (typeof data.remainingSeconds === 'number' && data.remainingSeconds <= 0)) {
+        if (data.result) {
+          setSubmissionResult(data.result);
+        }
+        handleTimeoutSubmit();
+        return;
+      }
+
+      if (typeof data.remainingSeconds === 'number') {
+        const serverTimeMs = new Date(data.serverTime).getTime();
+        serverDeadlineMsRef.current = new Date(data.deadlineAt).getTime();
+        serverTimeOffsetRef.current = serverTimeMs - Date.now();
+        syncMonotonicRef.current = performance.now();
+        syncRemainingSecondsRef.current = data.remainingSeconds;
+
+        setTimeLeft(data.remainingSeconds);
+      }
+    } catch (err) {
+      console.warn('Background timer sync check failed:', err);
+    } finally {
+      isResyncingTimerRef.current = false;
+    }
+  }, [token, examId, handleTimeoutSubmit]);
+
+  // Countdown Timer Tick Effect (immune to computer clock tampering)
   useEffect(() => {
     if (isSubmitted || loading || error || !deadlineTime) return;
 
     const tick = () => {
-      const remaining = Math.max(0, Math.floor((deadlineTime - Date.now()) / 1000));
+      if (isSubmittedRef.current || isSubmittingRef.current) return;
+      if (syncMonotonicRef.current === null || syncRemainingSecondsRef.current === null) return;
+
+      // 1. Monotonic elapsed time calculation (immune to computer clock adjustments)
+      const elapsedMonotonicSec = Math.floor((performance.now() - syncMonotonicRef.current) / 1000);
+      const monotonicRemaining = Math.max(0, syncRemainingSecondsRef.current - elapsedMonotonicSec);
+
+      // 2. Server-offset wall clock time calculation (detects system suspend/sleep)
+      const estimatedServerNow = Date.now() + serverTimeOffsetRef.current;
+      const wallRemaining = Math.max(0, Math.floor((serverDeadlineMsRef.current - estimatedServerNow) / 1000));
+
+      // Check for substantial discrepancy (e.g. computer clock jumped or computer slept)
+      if (Math.abs(monotonicRemaining - wallRemaining) > 10 && !isResyncingTimerRef.current) {
+        syncWithServerTimer();
+      }
+
+      // Setting local clock backwards NEVER grants extra time because monotonicRemaining stays accurate
+      const remaining = Math.min(monotonicRemaining, wallRemaining);
       setTimeLeft(remaining);
 
       if (remaining <= 0) {
@@ -288,7 +394,29 @@ export default function ExamRoom() {
     tick();
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-  }, [deadlineTime, isSubmitted, loading, error, handleTimeoutSubmit]);
+  }, [deadlineTime, isSubmitted, loading, error, handleTimeoutSubmit, syncWithServerTimer]);
+
+  // Periodic background timer synchronization and resume-from-sleep detector
+  useEffect(() => {
+    if (isSubmitted || loading || error || !attemptId) return;
+
+    const syncInterval = setInterval(() => {
+      syncWithServerTimer();
+    }, 30000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        syncWithServerTimer();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      clearInterval(syncInterval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isSubmitted, loading, error, attemptId, syncWithServerTimer]);
 
   const formatTime = (seconds) => {
     if (seconds === null || seconds === undefined) return '--:--';
@@ -356,6 +484,15 @@ export default function ExamRoom() {
           failedOperationsRef.current.delete(questionId);
           setFailedSaveError(null);
           setLastSavedTime(new Date());
+
+          // Re-sync authoritative countdown timer if provided by server
+          if (typeof body.remainingSeconds === 'number' && body.serverTime) {
+            const serverTimeMs = new Date(body.serverTime).getTime();
+            serverTimeOffsetRef.current = serverTimeMs - Date.now();
+            syncMonotonicRef.current = performance.now();
+            syncRemainingSecondsRef.current = body.remainingSeconds;
+            setTimeLeft(body.remainingSeconds);
+          }
 
           if (failedOperationsRef.current.size === 0 && inFlightCountRef.current <= 1) {
             setSaveStatus('saved');
