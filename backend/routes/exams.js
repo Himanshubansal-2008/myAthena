@@ -1,6 +1,7 @@
 const express = require("express");
 const prisma = require("../prisma");
 const { authenticateToken } = require("../middleware/authMiddleware");
+const { evaluateAnswer, calculateGrading } = require("../utils/grading");
 
 const router = express.Router();
 
@@ -17,7 +18,7 @@ async function autoSubmitAttempt(attemptId, externalTx = null) {
     const fullAttempt = await tx.attempt.findUnique({
       where: { id: attemptId },
       include: {
-        exam: { include: { questions: true } },
+        exam: { include: { questions: { orderBy: { order: "asc" } } } },
         answers: true,
         result: true,
       },
@@ -40,50 +41,25 @@ async function autoSubmitAttempt(attemptId, externalTx = null) {
     }
 
     const questions = fullAttempt?.exam?.questions || [];
-    let totalMarks = fullAttempt?.exam?.totalMarks || 100;
-    let negativeMarking = fullAttempt?.exam?.negativeMarking || 0;
-    let score = 0;
-    let correctCount = 0;
-    let wrongCount = 0;
-    let unansweredCount = 0;
-
-    questions.forEach((q) => {
-      const candidateChoice = answersMap[q.id];
-      if (candidateChoice === undefined || candidateChoice === null || candidateChoice === "") {
-        unansweredCount++;
-      } else {
-        const isCorrect =
-          String(candidateChoice) === String(q.correctAnswer) ||
-          (Array.isArray(q.options) && q.options[Number(candidateChoice)] === q.correctAnswer);
-        if (isCorrect) {
-          correctCount++;
-          score += q.marks;
-        } else {
-          wrongCount++;
-          score -= negativeMarking;
-        }
-      }
-    });
-
-    const finalScore = Math.max(0, Number(score.toFixed(2)));
+    const grading = calculateGrading(questions, answersMap, fullAttempt?.exam || {});
 
     const result = await tx.result.upsert({
       where: { attemptId },
       update: {
-        score: finalScore,
-        totalMarks,
-        correctCount,
-        wrongCount,
-        unansweredCount,
+        score: grading.score,
+        totalMarks: grading.totalMarks,
+        correctCount: grading.correctCount,
+        wrongCount: grading.wrongCount,
+        unansweredCount: grading.unansweredCount,
         calculatedAt: new Date(),
       },
       create: {
         attemptId,
-        score: finalScore,
-        totalMarks,
-        correctCount,
-        wrongCount,
-        unansweredCount,
+        score: grading.score,
+        totalMarks: grading.totalMarks,
+        correctCount: grading.correctCount,
+        wrongCount: grading.wrongCount,
+        unansweredCount: grading.unansweredCount,
       },
     });
 
@@ -91,7 +67,7 @@ async function autoSubmitAttempt(attemptId, externalTx = null) {
       where: { id: attemptId },
       data: {
         status: "AUTO_SUBMITTED",
-        submittedAt: new Date(),
+        submittedAt: fullAttempt.submittedAt || new Date(),
       },
     });
 
@@ -127,10 +103,21 @@ router.get("/results/my-results", authenticateToken, async (req, res) => {
       },
     });
 
+    // Ensure any submitted attempts missing a result record are authoritatively calculated
+    for (const att of attempts) {
+      if (!att.result) {
+        try {
+          att.result = await autoSubmitAttempt(att.id);
+        } catch (e) {
+          console.error(`Auto-calculate missing result for attempt ${att.id} error:`, e);
+        }
+      }
+    }
+
     const results = attempts.map((att) => {
       const resData = att.result || {
         score: 0,
-        totalMarks: att.exam.totalMarks || 100,
+        totalMarks: att.exam?.totalMarks || 100,
         correctCount: 0,
         wrongCount: 0,
         unansweredCount: 0,
@@ -196,7 +183,11 @@ router.get("/results/:attemptId", authenticateToken, async (req, res) => {
     }
 
     if (!attempt.result) {
-      return res.status(400).json({ message: "Examination results are still pending calculation." });
+      if (attempt.status === "SUBMITTED" || attempt.status === "AUTO_SUBMITTED") {
+        attempt.result = await autoSubmitAttempt(attempt.id);
+      } else {
+        return res.status(400).json({ message: "Examination results are still pending calculation." });
+      }
     }
 
     const answersMap = {};
@@ -206,12 +197,7 @@ router.get("/results/:attemptId", authenticateToken, async (req, res) => {
 
     const questionReviews = attempt.exam.questions.map((q) => {
       const selectedOption = answersMap[q.id];
-      const isAnswered = selectedOption !== undefined && selectedOption !== null && selectedOption !== "";
-
-      const isCorrect = isAnswered && (
-        String(selectedOption) === String(q.correctAnswer) ||
-        (Array.isArray(q.options) && q.options[Number(selectedOption)] === q.correctAnswer)
-      );
+      const { isAnswered, isCorrect } = evaluateAnswer(selectedOption, q);
 
       return {
         id: q.id,
@@ -1069,10 +1055,14 @@ router.post("/:id/submit", authenticateToken, async (req, res) => {
             include: { result: true },
           });
 
-          if (submitted && submitted.result) {
+          if (submitted) {
+            let resObj = submitted.result;
+            if (!resObj) {
+              resObj = await autoSubmitAttempt(submitted.id, tx);
+            }
             return {
               isDuplicate: true,
-              result: submitted.result,
+              result: resObj,
               attempt: submitted,
             };
           }
@@ -1108,6 +1098,14 @@ router.post("/:id/submit", authenticateToken, async (req, res) => {
         };
       }
 
+      if (fullAttempt.examId !== examId) {
+        throw {
+          status: 400,
+          code: "INVALID_EXAM_SESSION",
+          message: "Examination attempt does not belong to the specified exam.",
+        };
+      }
+
       // Idempotent: If already submitted, return the existing result directly
       if (fullAttempt.status === "SUBMITTED" || fullAttempt.status === "AUTO_SUBMITTED") {
         let existingResult = fullAttempt.result;
@@ -1127,7 +1125,11 @@ router.post("/:id/submit", authenticateToken, async (req, res) => {
 
       // Persist any final answers passed in body ONLY IF NOT expired
       if (!isAutoSubmitted && answers && typeof answers === "object") {
+        const validQuestionIds = new Set((fullAttempt.exam.questions || []).map((q) => q.id));
+
         for (const [qId, optVal] of Object.entries(answers)) {
+          if (!validQuestionIds.has(qId)) continue;
+
           const cleanOption =
             optVal === null || optVal === undefined || optVal === "" ? null : String(optVal);
           await tx.attemptAnswer.upsert({
@@ -1149,7 +1151,7 @@ router.post("/:id/submit", authenticateToken, async (req, res) => {
         }
       }
 
-      // Re-fetch all saved answers to grade against persisted state
+      // Re-fetch all saved answers to grade authoritatively against persisted state
       const allAnswers = await tx.attemptAnswer.findMany({
         where: { attemptId: fullAttempt.id },
       });
@@ -1160,53 +1162,26 @@ router.post("/:id/submit", authenticateToken, async (req, res) => {
       });
 
       const questions = fullAttempt.exam.questions || [];
-      let totalMarks = fullAttempt.exam.totalMarks || 100;
-      let negativeMarking = fullAttempt.exam.negativeMarking || 0;
-      let score = 0;
-      let correctCount = 0;
-      let wrongCount = 0;
-      let unansweredCount = 0;
-
-      questions.forEach((q) => {
-        const candidateChoice = answersMap[q.id];
-
-        if (candidateChoice === undefined || candidateChoice === null || candidateChoice === "") {
-          unansweredCount++;
-        } else {
-          const isCorrect =
-            String(candidateChoice) === String(q.correctAnswer) ||
-            (Array.isArray(q.options) && q.options[Number(candidateChoice)] === q.correctAnswer);
-
-          if (isCorrect) {
-            correctCount++;
-            score += q.marks;
-          } else {
-            wrongCount++;
-            score -= negativeMarking;
-          }
-        }
-      });
-
-      const finalScore = Math.max(0, Number(score.toFixed(2)));
+      const grading = calculateGrading(questions, answersMap, fullAttempt.exam);
 
       // Upsert Result record
       const savedResult = await tx.result.upsert({
         where: { attemptId: fullAttempt.id },
         update: {
-          score: finalScore,
-          totalMarks,
-          correctCount,
-          wrongCount,
-          unansweredCount,
+          score: grading.score,
+          totalMarks: grading.totalMarks,
+          correctCount: grading.correctCount,
+          wrongCount: grading.wrongCount,
+          unansweredCount: grading.unansweredCount,
           calculatedAt: new Date(),
         },
         create: {
           attemptId: fullAttempt.id,
-          score: finalScore,
-          totalMarks,
-          correctCount,
-          wrongCount,
-          unansweredCount,
+          score: grading.score,
+          totalMarks: grading.totalMarks,
+          correctCount: grading.correctCount,
+          wrongCount: grading.wrongCount,
+          unansweredCount: grading.unansweredCount,
         },
       });
 
