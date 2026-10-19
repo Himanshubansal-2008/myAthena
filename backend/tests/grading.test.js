@@ -451,8 +451,95 @@ async function runTests() {
       const detailRes = await apiRequest(`/results/${attempt.id}`, "GET", null, token);
       assert.strictEqual(detailRes.status, 200);
       assert.strictEqual(detailRes.data.score, 100);
+      assert.strictEqual(detailRes.data.totalMarks, 100);
+      assert.strictEqual(detailRes.data.percentage, 100);
+      assert.strictEqual(detailRes.data.passed, true);
       assert.strictEqual(detailRes.data.questions.length, 4);
       assert(detailRes.data.questions.every((q) => q.isCorrect));
+      assert(detailRes.data.questions.every((q) => q.isAnswered));
+      assert(detailRes.data.questions.every((q) => q.marksAwarded === q.marks));
+    });
+
+    // TEST 8: Answer Review breakdown with correct, incorrect, and unanswered distinction
+    await asyncTest("Integration: Detailed answer review accurately distinguishes correct, wrong, and unanswered questions", async () => {
+      const { user, token } = await createTestCandidate("review_breakdown");
+      const attempt = await createTestAttempt(user.id);
+
+      // Q0: correct ("0")
+      // Q1: wrong ("0", correct is "1")
+      // Q2: unanswered
+      // Q3: unanswered
+      const answers = {
+        [exam.questions[0].id]: exam.questions[0].correctAnswer, // correct
+        [exam.questions[1].id]: "0", // wrong (correctAnswer is "1")
+      };
+
+      await apiRequest(`/cs-401/submit`, "POST", {
+        attemptId: attempt.id,
+        answers,
+      }, token);
+
+      const res = await apiRequest(`/results/${attempt.id}`, "GET", null, token);
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.data.correctCount, 1);
+      assert.strictEqual(res.data.wrongCount, 1);
+      assert.strictEqual(res.data.unansweredCount, 2);
+
+      const qs = res.data.questions;
+      // Q0: Correct
+      assert.strictEqual(qs[0].isAnswered, true);
+      assert.strictEqual(qs[0].isCorrect, true);
+      assert.strictEqual(qs[0].marksAwarded, 25);
+      assert.strictEqual(qs[0].correctOptionIndex, 0);
+      assert.strictEqual(qs[0].selectedOptionIndex, 0);
+
+      // Q1: Incorrect
+      assert.strictEqual(qs[1].isAnswered, true);
+      assert.strictEqual(qs[1].isCorrect, false);
+      assert.strictEqual(qs[1].marksAwarded, -0.5);
+      assert.strictEqual(qs[1].correctOptionIndex, 1);
+      assert.strictEqual(qs[1].selectedOptionIndex, 0);
+
+      // Q2: Unanswered
+      assert.strictEqual(qs[2].isAnswered, false);
+      assert.strictEqual(qs[2].isCorrect, false);
+      assert.strictEqual(qs[2].marksAwarded, 0);
+      assert.strictEqual(qs[2].selectedOption, null);
+      assert.strictEqual(qs[2].selectedOptionIndex, null);
+
+      // Q3: Unanswered
+      assert.strictEqual(qs[3].isAnswered, false);
+      assert.strictEqual(qs[3].isCorrect, false);
+      assert.strictEqual(qs[3].marksAwarded, 0);
+      assert.strictEqual(qs[3].selectedOption, null);
+      assert.strictEqual(qs[3].selectedOptionIndex, null);
+    });
+
+    // TEST 9: Security - Candidate cannot access another candidate's result by URL/ID tampering
+    await asyncTest("Integration: Candidate cannot access another candidate's detailed results by changing attempt ID", async () => {
+      const { user: userA, token: tokenA } = await createTestCandidate("victim_user");
+      const { user: userB, token: tokenB } = await createTestCandidate("snooper_user");
+      const attemptA = await createTestAttempt(userA.id);
+
+      // Submit userA's exam
+      await apiRequest(`/cs-401/submit`, "POST", {
+        attemptId: attemptA.id,
+        answers: {},
+      }, tokenA);
+
+      // userB attempts to view userA's result
+      const tamperedRes = await apiRequest(`/results/${attemptA.id}`, "GET", null, tokenB);
+      assert.strictEqual(tamperedRes.status, 404, "Access to another candidate's result must be rejected with 404");
+    });
+
+    // TEST 10: Security - In-progress session cannot access answers before submission
+    await asyncTest("Integration: In-progress session cannot access answers/results before submission", async () => {
+      const { user, token } = await createTestCandidate("premature_result");
+      const attempt = await createTestAttempt(user.id);
+
+      // Try to access results before submitting
+      const res = await apiRequest(`/results/${attempt.id}`, "GET", null, token);
+      assert.strictEqual(res.status, 400, "In-progress attempt cannot access results before submission");
     });
 
     server.close();

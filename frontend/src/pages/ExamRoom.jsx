@@ -15,6 +15,10 @@ import {
   RotateCcw,
   Keyboard,
   Clock,
+  CheckCircle2,
+  XCircle,
+  MinusCircle,
+  FileCheck,
 } from 'lucide-react';
 import './pages.css';
 
@@ -1062,11 +1066,40 @@ export default function ExamRoom() {
               : `Your assessment session for ${exam?.title || 'this examination'} has been securely submitted and graded.`}
           </p>
 
+          {/* Submission Result Overview */}
+          {submissionResult && submissionResult.percentage !== undefined && (
+            <div style={{ marginBottom: '20px' }}>
+              <div
+                className="status-pill"
+                style={{
+                  background: submissionResult.passed ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                  borderColor: submissionResult.passed ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)',
+                  color: submissionResult.passed ? '#34d399' : '#f87171',
+                  fontSize: '12.5px',
+                  fontWeight: 700,
+                  padding: '5px 14px',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  borderRadius: '999px',
+                  border: '1px solid',
+                }}
+              >
+                {submissionResult.passed ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
+                <span>
+                  {submissionResult.passed
+                    ? `Passed (${submissionResult.percentage}%)`
+                    : `Did Not Meet 40% Threshold (${submissionResult.percentage}%)`}
+                </span>
+              </div>
+            </div>
+          )}
+
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(3, 1fr)',
-              gap: '12px',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))',
+              gap: '10px',
               padding: '16px',
               background: 'rgba(15, 23, 42, 0.6)',
               border: '1px solid var(--border-default)',
@@ -1076,21 +1109,30 @@ export default function ExamRoom() {
             }}
           >
             <div>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Questions</div>
-              <div style={{ fontSize: '18px', fontWeight: 700, color: '#f3f5f8', marginTop: '4px' }}>
-                {totalQuestions}
-              </div>
-            </div>
-            <div>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Answered</div>
-              <div style={{ fontSize: '18px', fontWeight: 700, color: '#34d399', marginTop: '4px' }}>
-                {answeredCount}
-              </div>
-            </div>
-            <div>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Score</div>
-              <div style={{ fontSize: '18px', fontWeight: 700, color: '#a5b4fc', marginTop: '4px' }}>
+              <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Score</div>
+              <div style={{ fontSize: '17px', fontWeight: 700, color: '#a5b4fc', marginTop: '4px' }}>
                 {submissionResult?.score !== undefined ? `${submissionResult.score}/${submissionResult.totalMarks || 100}` : 'Recorded'}
+              </div>
+            </div>
+
+            <div>
+              <div style={{ fontSize: '10.5px', color: '#34d399', textTransform: 'uppercase', fontWeight: 600 }}>Correct</div>
+              <div style={{ fontSize: '17px', fontWeight: 700, color: '#34d399', marginTop: '4px' }}>
+                {submissionResult?.correctCount !== undefined ? submissionResult.correctCount : '-'}
+              </div>
+            </div>
+
+            <div>
+              <div style={{ fontSize: '10.5px', color: '#f87171', textTransform: 'uppercase', fontWeight: 600 }}>Wrong</div>
+              <div style={{ fontSize: '17px', fontWeight: 700, color: '#f87171', marginTop: '4px' }}>
+                {submissionResult?.wrongCount !== undefined ? submissionResult.wrongCount : '-'}
+              </div>
+            </div>
+
+            <div>
+              <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Skipped</div>
+              <div style={{ fontSize: '17px', fontWeight: 700, color: '#94a3b8', marginTop: '4px' }}>
+                {submissionResult?.unansweredCount !== undefined ? submissionResult.unansweredCount : '-'}
               </div>
             </div>
           </div>
@@ -1099,19 +1141,36 @@ export default function ExamRoom() {
             Athena Single-Attempt Rule: You cannot re-enter or retake this examination.
           </div>
 
-          <button
-            onClick={() => {
-              if (window.electronAPI && typeof window.electronAPI.setFullscreen === 'function') {
-                window.electronAPI.setFullscreen(false).catch(() => {});
-              }
-              navigate('/dashboard', { state: { tab: 'history' } });
-            }}
-            className="btn btn-primary"
-            style={{ margin: '0 auto' }}
-          >
-            <ArrowLeft size={15} />
-            <span>View Results in Dashboard</span>
-          </button>
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
+            {(attemptIdRef.current || attemptId) && (
+              <button
+                onClick={() => {
+                  if (window.electronAPI && typeof window.electronAPI.setFullscreen === 'function') {
+                    window.electronAPI.setFullscreen(false).catch(() => {});
+                  }
+                  navigate(`/results/${attemptIdRef.current || attemptId}`);
+                }}
+                className="btn btn-primary"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+              >
+                <FileCheck size={15} />
+                <span>Review Question Answers</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => {
+                if (window.electronAPI && typeof window.electronAPI.setFullscreen === 'function') {
+                  window.electronAPI.setFullscreen(false).catch(() => {});
+                }
+                navigate('/dashboard', { state: { tab: 'history' } });
+              }}
+              className="btn btn-secondary"
+            >
+              <ArrowLeft size={14} />
+              <span>Return to Dashboard</span>
+            </button>
+          </div>
         </div>
       </div>
     );

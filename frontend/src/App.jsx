@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard.jsx';
 import ExamInstructions from './pages/ExamInstructions.jsx';
 import ExamReadiness from './pages/ExamReadiness.jsx';
 import ExamRoom from './pages/ExamRoom.jsx';
+import ExamResults from './pages/ExamResults.jsx';
 import { Shield } from 'lucide-react';
 import './index.css';
 import './pages/pages.css';
@@ -157,6 +158,30 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <ExamRoom />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/results/:attemptId"
+            element={
+              <ProtectedRoute>
+                <ExamResults />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/exam-results/:attemptId"
+            element={
+              <ProtectedRoute>
+                <ExamResults />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/results"
+            element={
+              <ProtectedRoute>
+                <ExamResults />
               </ProtectedRoute>
             }
           />

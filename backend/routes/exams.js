@@ -195,9 +195,64 @@ router.get("/results/:attemptId", authenticateToken, async (req, res) => {
       answersMap[ans.questionId] = ans.selectedOption;
     });
 
+    const negativeMarking =
+      typeof attempt.exam.negativeMarking === "number" && attempt.exam.negativeMarking > 0
+        ? attempt.exam.negativeMarking
+        : 0;
+
     const questionReviews = attempt.exam.questions.map((q) => {
       const selectedOption = answersMap[q.id];
       const { isAnswered, isCorrect } = evaluateAnswer(selectedOption, q);
+
+      // Resolve correct option index and text from options array
+      let correctOptionIndex = null;
+      let correctOptionText = String(q.correctAnswer ?? "");
+      if (Array.isArray(q.options)) {
+        const numIdx = Number(q.correctAnswer);
+        if (!isNaN(numIdx) && numIdx >= 0 && numIdx < q.options.length) {
+          correctOptionIndex = numIdx;
+          correctOptionText = String(q.options[numIdx] ?? "");
+        } else {
+          const foundIdx = q.options.findIndex(
+            (opt) => String(opt).trim().toLowerCase() === String(q.correctAnswer).trim().toLowerCase()
+          );
+          if (foundIdx !== -1) {
+            correctOptionIndex = foundIdx;
+            correctOptionText = String(q.options[foundIdx] ?? "");
+          }
+        }
+      }
+
+      // Resolve selected option index and text from options array
+      let selectedOptionIndex = null;
+      let selectedOptionText = null;
+      if (isAnswered) {
+        selectedOptionText = String(selectedOption);
+        if (Array.isArray(q.options)) {
+          const numIdx = Number(selectedOption);
+          if (!isNaN(numIdx) && numIdx >= 0 && numIdx < q.options.length) {
+            selectedOptionIndex = numIdx;
+            selectedOptionText = String(q.options[numIdx] ?? "");
+          } else {
+            const foundIdx = q.options.findIndex(
+              (opt) => String(opt).trim().toLowerCase() === String(selectedOption).trim().toLowerCase()
+            );
+            if (foundIdx !== -1) {
+              selectedOptionIndex = foundIdx;
+              selectedOptionText = String(q.options[foundIdx] ?? "");
+            }
+          }
+        }
+      }
+
+      // Authoritative marks awarded for this question
+      const qMarks = typeof q.marks === "number" && q.marks > 0 ? q.marks : 1;
+      let marksAwarded = 0;
+      if (isCorrect) {
+        marksAwarded = qMarks;
+      } else if (isAnswered) {
+        marksAwarded = -negativeMarking;
+      }
 
       return {
         id: q.id,
@@ -205,28 +260,41 @@ router.get("/results/:attemptId", authenticateToken, async (req, res) => {
         text: q.text,
         options: q.options,
         selectedOption: isAnswered ? selectedOption : null,
+        selectedOptionIndex,
+        selectedOptionText,
         correctAnswer: q.correctAnswer,
+        correctOptionIndex,
+        correctOptionText,
         isAnswered,
         isCorrect,
-        marks: q.marks,
+        marks: qMarks,
+        marksAwarded,
+        explanation: q.explanation || null,
       };
     });
 
     const percentage = Number(((attempt.result.score / attempt.result.totalMarks) * 100).toFixed(1));
+    const passed = percentage >= 40.0;
+
     res.json({
       attemptId: attempt.id,
       examId: attempt.exam.id,
       examTitle: attempt.exam.title,
       examCode: attempt.exam.id.toUpperCase(),
-      department: attempt.exam.description,
-      submittedAt: attempt.submittedAt,
+      department: attempt.exam.description || "School of Engineering",
+      durationMinutes: attempt.exam.durationMinutes,
+      negativeMarking,
+      startedAt: attempt.startedAt,
+      submittedAt: attempt.submittedAt || attempt.updatedAt,
       score: attempt.result.score,
       totalMarks: attempt.result.totalMarks,
       percentage,
+      passed,
       status: "COMPLETED",
       correctCount: attempt.result.correctCount,
       wrongCount: attempt.result.wrongCount,
       unansweredCount: attempt.result.unansweredCount,
+      totalQuestions: attempt.exam.questions.length,
       incidents: attempt.incidents,
       questions: questionReviews,
     });

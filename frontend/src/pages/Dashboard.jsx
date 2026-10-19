@@ -10,6 +10,7 @@ import {
   Lock,
   Clock,
   RotateCcw,
+  FileCheck,
 } from 'lucide-react';
 import './pages.css';
 
@@ -579,11 +580,21 @@ export default function Dashboard() {
                           </div>
                         </div>
 
-                        <div className="exam-footer-row">
+                        <div className="exam-footer-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
                           <div className="exam-security-note">
                             <CheckCircle2 size={13} color="#34d399" />
                             <span>Attempt Finalized • Single-Attempt Policy Enforced</span>
                           </div>
+                          {result.attemptId && (
+                            <button
+                              onClick={() => navigate(`/results/${result.attemptId}`)}
+                              className="btn btn-secondary btn-sm"
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                            >
+                              <FileCheck size={13} />
+                              <span>Review Answers & Results</span>
+                            </button>
+                          )}
                         </div>
                       </div>
                     );
