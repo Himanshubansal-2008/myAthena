@@ -11,6 +11,9 @@ const router = express.Router();
  */
 async function autoSubmitAttempt(attemptId, externalTx = null) {
   const runner = async (tx) => {
+    // Acquire row-level lock on Attempt in PostgreSQL to prevent concurrent submission races
+    await tx.$queryRaw`SELECT id FROM "Attempt" WHERE id = ${attemptId} FOR UPDATE`;
+
     const fullAttempt = await tx.attempt.findUnique({
       where: { id: attemptId },
       include: {
@@ -810,15 +813,6 @@ router.post("/:id/answer", authenticateToken, async (req, res) => {
     }
 
     // Retrieve attempts for authenticated user and exam
-    const existingAttempts = await prisma.attempt.findMany({
-      where: {
-        userId,
-        examId,
-      },
-      orderBy: { startedAt: "desc" },
-    });
-
-    // If attemptId was passed, verify ownership strictly; otherwise target most recent
     let targetAttempt;
     if (attemptId) {
       const specifiedAttempt = await prisma.attempt.findUnique({
@@ -836,8 +830,21 @@ router.post("/:id/answer", authenticateToken, async (req, res) => {
           code: "FORBIDDEN",
         });
       }
+      if (specifiedAttempt.examId !== examId) {
+        return res.status(400).json({
+          message: "Examination attempt does not belong to the specified exam.",
+          code: "INVALID_EXAM_SESSION",
+        });
+      }
       targetAttempt = specifiedAttempt;
     } else {
+      const existingAttempts = await prisma.attempt.findMany({
+        where: {
+          userId,
+          examId,
+        },
+        orderBy: { startedAt: "desc" },
+      });
       targetAttempt = existingAttempts[0];
     }
 
@@ -848,28 +855,125 @@ router.post("/:id/answer", authenticateToken, async (req, res) => {
       });
     }
 
-    // Server-side check: Reject modifications to submitted sessions
-    if (targetAttempt.status === "SUBMITTED" || targetAttempt.status === "AUTO_SUBMITTED") {
-      return res.status(403).json({
-        message: "Modifications to submitted examination sessions are rejected.",
-        code: "ALREADY_SUBMITTED",
+    // Atomic session verification and answer update in transaction to prevent concurrency races with submission
+    const saveResult = await prisma.$transaction(async (tx) => {
+      const freshAttempt = await tx.attempt.findUnique({
+        where: { id: targetAttempt.id },
       });
-    }
 
-    if (targetAttempt.status !== "IN_PROGRESS") {
-      return res.status(403).json({
-        message: "Examination session is not active.",
-        code: "INVALID_SESSION_STATUS",
-      });
-    }
-
-    if (targetAttempt.deadlineAt && new Date() > new Date(targetAttempt.deadlineAt)) {
-      try {
-        await autoSubmitAttempt(targetAttempt.id);
-      } catch (e) {
-        console.error("Auto submit on answer expiry error:", e);
+      if (!freshAttempt || freshAttempt.userId !== userId) {
+        throw {
+          status: 403,
+          code: "FORBIDDEN",
+          message: "Unauthorized: You do not own this examination session.",
+        };
       }
 
+      // Reject modifications to submitted sessions
+      if (freshAttempt.status === "SUBMITTED" || freshAttempt.status === "AUTO_SUBMITTED") {
+        throw {
+          status: 403,
+          code: "ALREADY_SUBMITTED",
+          message: "Modifications to submitted examination sessions are rejected.",
+        };
+      }
+
+      if (freshAttempt.status !== "IN_PROGRESS") {
+        throw {
+          status: 403,
+          code: "INVALID_SESSION_STATUS",
+          message: "Examination session is not active.",
+        };
+      }
+
+      // Check timeout
+      if (freshAttempt.deadlineAt && new Date() > new Date(freshAttempt.deadlineAt)) {
+        try {
+          await autoSubmitAttempt(freshAttempt.id, tx);
+        } catch (e) {
+          console.error("Auto submit on answer expiry error:", e);
+        }
+
+        return { expired: true, freshAttempt };
+      }
+
+      // Prevent rapid answer changes from overwriting newer answers due to network races
+      const updateKey = `${freshAttempt.id}:${questionId}`;
+      const reqTimestamp = clientTimestamp ? Number(clientTimestamp) : null;
+      const reqSequence = sequence !== undefined && sequence !== null ? Number(sequence) : null;
+
+      if (reqTimestamp) {
+        const existingTracked = latestAnswerUpdates.get(updateKey);
+        if (existingTracked) {
+          if (existingTracked.timestamp > reqTimestamp) {
+            return { stale: true, freshAttempt };
+          }
+          if (
+            existingTracked.timestamp === reqTimestamp &&
+            reqSequence !== null &&
+            existingTracked.sequence > reqSequence
+          ) {
+            return { stale: true, freshAttempt };
+          }
+        }
+      }
+
+      // Determine new values, correctly handling null/cleared answer
+      const existingAnswer = await tx.attemptAnswer.findUnique({
+        where: {
+          attemptId_questionId: {
+            attemptId: freshAttempt.id,
+            questionId,
+          },
+        },
+      });
+
+      let newSelectedOption = existingAnswer ? existingAnswer.selectedOption : null;
+      if (selectedOption !== undefined) {
+        newSelectedOption = (selectedOption === null || selectedOption === "") ? null : String(selectedOption);
+      }
+
+      let newIsMarkedForReview = existingAnswer ? existingAnswer.isMarkedForReview : false;
+      if (typeof isMarkedForReview === "boolean") {
+        newIsMarkedForReview = isMarkedForReview;
+      }
+
+      const answer = await tx.attemptAnswer.upsert({
+        where: {
+          attemptId_questionId: {
+            attemptId: freshAttempt.id,
+            questionId,
+          },
+        },
+        update: {
+          selectedOption: newSelectedOption,
+          isMarkedForReview: newIsMarkedForReview,
+        },
+        create: {
+          attemptId: freshAttempt.id,
+          questionId,
+          selectedOption: newSelectedOption,
+          isMarkedForReview: newIsMarkedForReview,
+        },
+      });
+
+      if (reqTimestamp) {
+        trackAnswerUpdate(updateKey, reqTimestamp, reqSequence || 0);
+      }
+
+      return { stale: false, answer, freshAttempt };
+    });
+
+    if (saveResult.stale) {
+      return res.json({
+        ok: true,
+        stale: true,
+        message: "Stale answer update ignored.",
+        ignored: true,
+      });
+    }
+
+    if (saveResult.expired) {
       return res.status(403).json({
         message: "Assessment time has expired. Answers can no longer be recorded.",
         code: "EXAM_TIMEOUT",
@@ -878,88 +982,30 @@ router.post("/:id/answer", authenticateToken, async (req, res) => {
       });
     }
 
-    // Prevent rapid answer changes from overwriting newer answers due to network races
-    const updateKey = `${targetAttempt.id}:${questionId}`;
-    const reqTimestamp = clientTimestamp ? Number(clientTimestamp) : null;
-    const reqSequence = sequence !== undefined && sequence !== null ? Number(sequence) : null;
-
-    if (reqTimestamp) {
-      const existingTracked = latestAnswerUpdates.get(updateKey);
-      if (existingTracked) {
-        if (existingTracked.timestamp > reqTimestamp) {
-          return res.json({
-            ok: true,
-            stale: true,
-            message: "Stale answer update ignored.",
-            ignored: true,
-          });
-        }
-        if (existingTracked.timestamp === reqTimestamp && reqSequence !== null && existingTracked.sequence > reqSequence) {
-          return res.json({
-            ok: true,
-            stale: true,
-            message: "Stale answer update ignored.",
-            ignored: true,
-          });
-        }
-      }
-    }
-
-    // Determine new values, correctly handling null/cleared answer
-    const existingAnswer = await prisma.attemptAnswer.findUnique({
-      where: {
-        attemptId_questionId: {
-          attemptId: targetAttempt.id,
-          questionId,
-        },
-      },
-    });
-
-    let newSelectedOption = existingAnswer ? existingAnswer.selectedOption : null;
-    if (selectedOption !== undefined) {
-      newSelectedOption = (selectedOption === null || selectedOption === "") ? null : String(selectedOption);
-    }
-
-    let newIsMarkedForReview = existingAnswer ? existingAnswer.isMarkedForReview : false;
-    if (typeof isMarkedForReview === "boolean") {
-      newIsMarkedForReview = isMarkedForReview;
-    }
-
-    const answer = await prisma.attemptAnswer.upsert({
-      where: {
-        attemptId_questionId: {
-          attemptId: targetAttempt.id,
-          questionId,
-        },
-      },
-      update: {
-        selectedOption: newSelectedOption,
-        isMarkedForReview: newIsMarkedForReview,
-      },
-      create: {
-        attemptId: targetAttempt.id,
-        questionId,
-        selectedOption: newSelectedOption,
-        isMarkedForReview: newIsMarkedForReview,
-      },
-    });
-
-    if (reqTimestamp) {
-      trackAnswerUpdate(updateKey, reqTimestamp, reqSequence || 0);
-    }
-
     const serverNow = new Date();
-    const remainingSeconds = targetAttempt.deadlineAt
-      ? Math.max(0, Math.floor((new Date(targetAttempt.deadlineAt).getTime() - serverNow.getTime()) / 1000))
+    const remainingSeconds = saveResult.freshAttempt.deadlineAt
+      ? Math.max(
+          0,
+          Math.floor((new Date(saveResult.freshAttempt.deadlineAt).getTime() - serverNow.getTime()) / 1000)
+        )
       : null;
 
     res.json({
       ok: true,
-      answer,
+      answer: saveResult.answer,
       serverTime: serverNow.toISOString(),
       remainingSeconds,
     });
   } catch (error) {
+    if (error.status) {
+      return res.status(error.status).json({
+        message: error.message,
+        code: error.code || "ERROR",
+        ...(error.code === "EXAM_TIMEOUT"
+          ? { serverTime: new Date().toISOString(), remainingSeconds: 0 }
+          : {}),
+      });
+    }
     console.error("Save answer error:", error);
     res.status(500).json({ message: "Failed to persist answer choice." });
   }
@@ -992,75 +1038,120 @@ router.post("/:id/submit", authenticateToken, async (req, res) => {
           code: "FORBIDDEN",
         });
       }
+      if (specifiedAttempt.examId !== examId) {
+        return res.status(400).json({
+          message: "Examination attempt does not belong to the specified exam.",
+          code: "INVALID_EXAM_SESSION",
+        });
+      }
     }
 
-    // Use transaction for safe atomic submission and grading
+    // Use transaction for safe atomic submission, locking, and grading
     const graded = await prisma.$transaction(async (tx) => {
-      // Find attempts
-      const attempts = await tx.attempt.findMany({
-        where: {
-          userId,
-          examId,
-        },
-        orderBy: { startedAt: "desc" },
+      // Find attempt to submit
+      let targetAttemptId = attemptId;
+      if (!targetAttemptId) {
+        const active = await tx.attempt.findFirst({
+          where: { userId, examId, status: "IN_PROGRESS" },
+          orderBy: { startedAt: "desc" },
+          select: { id: true },
+        });
+
+        if (!active) {
+          // Check for previously submitted attempt to return idempotently
+          const submitted = await tx.attempt.findFirst({
+            where: {
+              userId,
+              examId,
+              status: { in: ["SUBMITTED", "AUTO_SUBMITTED"] },
+            },
+            orderBy: { submittedAt: "desc" },
+            include: { result: true },
+          });
+
+          if (submitted && submitted.result) {
+            return {
+              isDuplicate: true,
+              result: submitted.result,
+              attempt: submitted,
+            };
+          }
+
+          throw { status: 404, message: "No active examination attempt found to submit." };
+        }
+        targetAttemptId = active.id;
+      }
+
+      // Row-level lock on Attempt in PostgreSQL: serializes concurrent submit requests
+      await tx.$queryRaw`SELECT id FROM "Attempt" WHERE id = ${targetAttemptId} FOR UPDATE`;
+
+      const fullAttempt = await tx.attempt.findUnique({
+        where: { id: targetAttemptId },
         include: {
           exam: {
-            include: { questions: true },
+            include: { questions: { orderBy: { order: "asc" } } },
           },
           answers: true,
           result: true,
         },
       });
 
-      const submittedAttempt = attempts.find(
-        (a) => a.status === "SUBMITTED" || a.status === "AUTO_SUBMITTED"
-      );
+      if (!fullAttempt) {
+        throw { status: 404, message: "Examination attempt not found." };
+      }
 
-      // Idempotent: If already submitted, return the existing result directly
-      if (submittedAttempt && submittedAttempt.result) {
-        return {
-          isDuplicate: true,
-          result: submittedAttempt.result,
-          attempt: submittedAttempt,
+      if (fullAttempt.userId !== userId) {
+        throw {
+          status: 403,
+          code: "FORBIDDEN",
+          message: "Unauthorized: You do not own this examination session.",
         };
       }
 
-      const activeAttempt = attempts.find((a) => a.status === "IN_PROGRESS");
-      if (!activeAttempt) {
-        throw { status: 404, message: "No active examination attempt found to submit." };
+      // Idempotent: If already submitted, return the existing result directly
+      if (fullAttempt.status === "SUBMITTED" || fullAttempt.status === "AUTO_SUBMITTED") {
+        let existingResult = fullAttempt.result;
+        if (!existingResult) {
+          existingResult = await autoSubmitAttempt(fullAttempt.id, tx);
+        }
+        return {
+          isDuplicate: true,
+          result: existingResult,
+          attempt: fullAttempt,
+        };
       }
 
       const isExpired =
-        Boolean(activeAttempt.deadlineAt) && new Date() > new Date(activeAttempt.deadlineAt);
+        Boolean(fullAttempt.deadlineAt) && new Date() > new Date(fullAttempt.deadlineAt);
       const isAutoSubmitted = Boolean(isTimeout) || isExpired;
 
       // Persist any final answers passed in body ONLY IF NOT expired
       if (!isAutoSubmitted && answers && typeof answers === "object") {
         for (const [qId, optVal] of Object.entries(answers)) {
-          if (optVal !== undefined && optVal !== null) {
-            await tx.attemptAnswer.upsert({
-              where: {
-                attemptId_questionId: {
-                  attemptId: activeAttempt.id,
-                  questionId: qId,
-                },
-              },
-              update: {
-                selectedOption: String(optVal),
-              },
-              create: {
-                attemptId: activeAttempt.id,
+          const cleanOption =
+            optVal === null || optVal === undefined || optVal === "" ? null : String(optVal);
+          await tx.attemptAnswer.upsert({
+            where: {
+              attemptId_questionId: {
+                attemptId: fullAttempt.id,
                 questionId: qId,
-                selectedOption: String(optVal),
               },
-            });
-          }
+            },
+            update: {
+              selectedOption: cleanOption,
+            },
+            create: {
+              attemptId: fullAttempt.id,
+              questionId: qId,
+              selectedOption: cleanOption,
+            },
+          });
         }
       }
 
-      // Re-fetch all saved answers
+      // Re-fetch all saved answers to grade against persisted state
       const allAnswers = await tx.attemptAnswer.findMany({
-        where: { attemptId: activeAttempt.id },
+        where: { attemptId: fullAttempt.id },
       });
 
       const answersMap = {};
@@ -1068,9 +1159,9 @@ router.post("/:id/submit", authenticateToken, async (req, res) => {
         answersMap[a.questionId] = a.selectedOption;
       });
 
-      const questions = activeAttempt.exam.questions;
-      let totalMarks = activeAttempt.exam.totalMarks || 100;
-      let negativeMarking = activeAttempt.exam.negativeMarking || 0;
+      const questions = fullAttempt.exam.questions || [];
+      let totalMarks = fullAttempt.exam.totalMarks || 100;
+      let negativeMarking = fullAttempt.exam.negativeMarking || 0;
       let score = 0;
       let correctCount = 0;
       let wrongCount = 0;
@@ -1100,7 +1191,7 @@ router.post("/:id/submit", authenticateToken, async (req, res) => {
 
       // Upsert Result record
       const savedResult = await tx.result.upsert({
-        where: { attemptId: activeAttempt.id },
+        where: { attemptId: fullAttempt.id },
         update: {
           score: finalScore,
           totalMarks,
@@ -1110,7 +1201,7 @@ router.post("/:id/submit", authenticateToken, async (req, res) => {
           calculatedAt: new Date(),
         },
         create: {
-          attemptId: activeAttempt.id,
+          attemptId: fullAttempt.id,
           score: finalScore,
           totalMarks,
           correctCount,
@@ -1121,7 +1212,7 @@ router.post("/:id/submit", authenticateToken, async (req, res) => {
 
       // Update Attempt status to SUBMITTED or AUTO_SUBMITTED
       const concludedAttempt = await tx.attempt.update({
-        where: { id: activeAttempt.id },
+        where: { id: fullAttempt.id },
         data: {
           status: isAutoSubmitted ? "AUTO_SUBMITTED" : "SUBMITTED",
           submittedAt: new Date(),

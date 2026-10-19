@@ -20,6 +20,8 @@ import './pages.css';
 
 const OPTION_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 const API_BASE_URL = 'http://localhost:5050/api';
+const MAX_AUTOSAVE_RETRIES = 3;
+const RETRY_BASE_DELAY_MS = 1000;
 
 export default function ExamRoom() {
   const navigate = useNavigate();
@@ -48,6 +50,7 @@ export default function ExamRoom() {
   const [attemptId, setAttemptId] = useState(null);
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState(null);
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [isTimeout, setIsTimeout] = useState(false);
   const [submissionResult, setSubmissionResult] = useState(null);
@@ -57,12 +60,13 @@ export default function ExamRoom() {
   const [lastSavedTime, setLastSavedTime] = useState(null);
   const [failedSaveError, setFailedSaveError] = useState(null);
 
-  // Rapid Changes & Stale Request Safeguards
+  // Rapid Changes, Retry & Stale Request Safeguards
   const questionSeqRef = useRef({});
   const questionTimestampRef = useRef({});
   const abortControllersRef = useRef({});
   const inFlightCountRef = useRef(0);
   const failedOperationsRef = useRef(new Map());
+  const retryTimersRef = useRef({});
 
   // Timer & Deadline State
   const [deadlineTime, setDeadlineTime] = useState(null);
@@ -79,10 +83,30 @@ export default function ExamRoom() {
   const isSubmittingRef = useRef(false);
   const isSubmittedRef = useRef(false);
   const selectedAnswersRef = useRef(selectedAnswers);
+  const flaggedQuestionsRef = useRef(flaggedQuestions);
+  const attemptIdRef = useRef(attemptId);
 
   useEffect(() => {
     selectedAnswersRef.current = selectedAnswers;
   }, [selectedAnswers]);
+
+  useEffect(() => {
+    flaggedQuestionsRef.current = flaggedQuestions;
+  }, [flaggedQuestions]);
+
+  useEffect(() => {
+    attemptIdRef.current = attemptId;
+  }, [attemptId]);
+
+  // Clean up any pending retry timers or network requests on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(retryTimersRef.current).forEach((t) => clearTimeout(t));
+      Object.values(abortControllersRef.current).forEach((c) => {
+        try { c.abort(); } catch (e) {}
+      });
+    };
+  }, []);
 
   // Live Candidate Video PiP Stream
   const [cameraActive, setCameraActive] = useState(false);
@@ -284,6 +308,11 @@ export default function ExamRoom() {
     setIsTimeout(true);
 
     try {
+      // Clear any pending retry timers
+      Object.values(retryTimersRef.current).forEach((t) => clearTimeout(t));
+      retryTimersRef.current = {};
+
+      const currentAttemptId = attemptIdRef.current || attemptId;
       const response = await fetch(`${API_BASE_URL}/exams/${examId}/submit`, {
         method: 'POST',
         headers: {
@@ -293,6 +322,7 @@ export default function ExamRoom() {
         body: JSON.stringify({
           answers: selectedAnswersRef.current,
           isTimeout: true,
+          attemptId: currentAttemptId,
         }),
       });
 
@@ -323,7 +353,7 @@ export default function ExamRoom() {
       isSubmittingRef.current = false;
       setShowSubmitModal(false);
     }
-  }, [examId, token]);
+  }, [examId, token, attemptId]);
 
   // Synchronize timer with authoritative server state
   const syncWithServerTimer = useCallback(async () => {
@@ -440,22 +470,36 @@ export default function ExamRoom() {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Persistent Save Function with stale-request prevention and retry queue
+  // Persistent Save Function with bounded retries, stale-request prevention, and retry queue
   const persistAnswerChange = useCallback(
-    async (questionId, { selectedOption, isMarkedForReview }) => {
+    async (questionId, { selectedOption, isMarkedForReview }, retryAttempt = 0) => {
       if (!token || !examId) return;
 
-      // Increment monotonic sequence number and record timestamp for this question
-      const currentSeq = (questionSeqRef.current[questionId] || 0) + 1;
-      questionSeqRef.current[questionId] = currentSeq;
-      const clientTimestamp = Date.now();
-      questionTimestampRef.current[questionId] = clientTimestamp;
+      // Clear any pending retry timer for this question
+      if (retryTimersRef.current[questionId]) {
+        clearTimeout(retryTimersRef.current[questionId]);
+        delete retryTimersRef.current[questionId];
+      }
 
-      // Abort any prior in-flight request for this specific question to avoid race conditions
-      if (abortControllersRef.current[questionId]) {
-        try {
-          abortControllersRef.current[questionId].abort();
-        } catch (e) {}
+      let currentSeq;
+      let clientTimestamp;
+
+      if (retryAttempt === 0) {
+        // Increment monotonic sequence number and record timestamp for this question
+        currentSeq = (questionSeqRef.current[questionId] || 0) + 1;
+        questionSeqRef.current[questionId] = currentSeq;
+        clientTimestamp = Date.now();
+        questionTimestampRef.current[questionId] = clientTimestamp;
+
+        // Abort any prior in-flight request for this specific question to avoid race conditions
+        if (abortControllersRef.current[questionId]) {
+          try {
+            abortControllersRef.current[questionId].abort();
+          } catch (e) {}
+        }
+      } else {
+        currentSeq = questionSeqRef.current[questionId] || 1;
+        clientTimestamp = questionTimestampRef.current[questionId] || Date.now();
       }
 
       const controller = new AbortController();
@@ -464,11 +508,12 @@ export default function ExamRoom() {
       inFlightCountRef.current += 1;
       setSaveStatus('saving');
 
+      const currentAttemptId = attemptIdRef.current || attemptId;
       const payload = {
         questionId,
         selectedOption,
         isMarkedForReview,
-        attemptId,
+        attemptId: currentAttemptId,
         clientTimestamp,
         sequence: currentSeq,
       };
@@ -505,7 +550,11 @@ export default function ExamRoom() {
             setTimeLeft(body.remainingSeconds);
           }
 
-          if (failedOperationsRef.current.size === 0 && inFlightCountRef.current <= 1) {
+          if (
+            failedOperationsRef.current.size === 0 &&
+            inFlightCountRef.current <= 1 &&
+            Object.keys(retryTimersRef.current).length === 0
+          ) {
             setSaveStatus('saved');
           }
         } else if (res.status === 403) {
@@ -522,7 +571,25 @@ export default function ExamRoom() {
             setSaveStatus('failed');
             setFailedSaveError(body.message || 'Answer save rejected by server.');
           }
+        } else if (res.status >= 500 || res.status === 429) {
+          // Temporary server error -> perform bounded retry with exponential delay
+          if (retryAttempt < MAX_AUTOSAVE_RETRIES) {
+            const nextRetry = retryAttempt + 1;
+            const delay = Math.round(RETRY_BASE_DELAY_MS * Math.pow(1.5, retryAttempt));
+            setSaveStatus('saving');
+            retryTimersRef.current[questionId] = setTimeout(() => {
+              delete retryTimersRef.current[questionId];
+              if (questionSeqRef.current[questionId] === currentSeq && !isSubmittedRef.current) {
+                persistAnswerChange(questionId, { selectedOption, isMarkedForReview }, nextRetry);
+              }
+            }, delay);
+          } else {
+            failedOperationsRef.current.set(questionId, payload);
+            setSaveStatus('failed');
+            setFailedSaveError(`Server error (${res.status}). Failed to save answer after ${MAX_AUTOSAVE_RETRIES} retries.`);
+          }
         } else {
+          // Client errors (400, 404, etc.)
           failedOperationsRef.current.set(questionId, payload);
           setSaveStatus('failed');
           setFailedSaveError(body.message || 'Failed to save answer to server.');
@@ -536,14 +603,28 @@ export default function ExamRoom() {
           return;
         }
         console.error('Answer save failed:', err);
-        failedOperationsRef.current.set(questionId, payload);
-        setSaveStatus('failed');
-        setFailedSaveError('Network error while saving response. Please retry.');
+
+        // Temporary network failure -> perform bounded retry with exponential delay
+        if (retryAttempt < MAX_AUTOSAVE_RETRIES) {
+          const nextRetry = retryAttempt + 1;
+          const delay = Math.round(RETRY_BASE_DELAY_MS * Math.pow(1.5, retryAttempt));
+          setSaveStatus('saving');
+          retryTimersRef.current[questionId] = setTimeout(() => {
+            delete retryTimersRef.current[questionId];
+            if (questionSeqRef.current[questionId] === currentSeq && !isSubmittedRef.current) {
+              persistAnswerChange(questionId, { selectedOption, isMarkedForReview }, nextRetry);
+            }
+          }, delay);
+        } else {
+          failedOperationsRef.current.set(questionId, payload);
+          setSaveStatus('failed');
+          setFailedSaveError(`Network connection interrupted. Save failed after ${MAX_AUTOSAVE_RETRIES} attempts.`);
+        }
       } finally {
         inFlightCountRef.current = Math.max(0, inFlightCountRef.current - 1);
         if (failedOperationsRef.current.size > 0) {
           setSaveStatus('failed');
-        } else if (inFlightCountRef.current === 0) {
+        } else if (inFlightCountRef.current === 0 && Object.keys(retryTimersRef.current).length === 0) {
           setSaveStatus('saved');
         }
       }
@@ -553,16 +634,25 @@ export default function ExamRoom() {
 
   // Retry all failed saves in the queue
   const retryFailedSaves = useCallback(() => {
+    // Clear any pending retry timers
+    Object.values(retryTimersRef.current).forEach((t) => clearTimeout(t));
+    retryTimersRef.current = {};
+
     if (failedOperationsRef.current.size === 0) return;
     const opsToRetry = Array.from(failedOperationsRef.current.entries());
     failedOperationsRef.current.clear();
     setFailedSaveError(null);
+    setSubmitError(null);
 
     opsToRetry.forEach(([qId, payload]) => {
-      persistAnswerChange(qId, {
-        selectedOption: payload.selectedOption,
-        isMarkedForReview: payload.isMarkedForReview,
-      });
+      persistAnswerChange(
+        qId,
+        {
+          selectedOption: payload.selectedOption,
+          isMarkedForReview: payload.isMarkedForReview,
+        },
+        0
+      );
     });
   }, [persistAnswerChange]);
 
@@ -571,16 +661,26 @@ export default function ExamRoom() {
     (questionId, optionIndex) => {
       if (isSubmittingRef.current || isSubmittedRef.current || timeLeft === 0) return;
 
+      // Clear any pending retry timer for this question
+      if (retryTimersRef.current[questionId]) {
+        clearTimeout(retryTimersRef.current[questionId]);
+        delete retryTimersRef.current[questionId];
+      }
+
       setSelectedAnswers((prev) => ({
         ...prev,
         [questionId]: optionIndex,
       }));
 
       // Persist answer choice to backend PostgreSQL
-      persistAnswerChange(questionId, {
-        selectedOption: optionIndex,
-        isMarkedForReview: Boolean(flaggedQuestions[questionId]),
-      });
+      persistAnswerChange(
+        questionId,
+        {
+          selectedOption: optionIndex,
+          isMarkedForReview: Boolean(flaggedQuestions[questionId]),
+        },
+        0
+      );
     },
     [timeLeft, flaggedQuestions, persistAnswerChange]
   );
@@ -590,6 +690,11 @@ export default function ExamRoom() {
     (questionId) => {
       if (!questionId || isSubmittingRef.current || isSubmittedRef.current || timeLeft === 0) return;
 
+      if (retryTimersRef.current[questionId]) {
+        clearTimeout(retryTimersRef.current[questionId]);
+        delete retryTimersRef.current[questionId];
+      }
+
       setSelectedAnswers((prev) => {
         if (prev[questionId] === undefined) return prev;
         const next = { ...prev };
@@ -598,10 +703,14 @@ export default function ExamRoom() {
       });
 
       // Persist cleared answer (selectedOption = null) to PostgreSQL
-      persistAnswerChange(questionId, {
-        selectedOption: null,
-        isMarkedForReview: Boolean(flaggedQuestions[questionId]),
-      });
+      persistAnswerChange(
+        questionId,
+        {
+          selectedOption: null,
+          isMarkedForReview: Boolean(flaggedQuestions[questionId]),
+        },
+        0
+      );
     },
     [timeLeft, flaggedQuestions, persistAnswerChange]
   );
@@ -611,6 +720,11 @@ export default function ExamRoom() {
     (questionId) => {
       if (!questionId || isSubmittingRef.current || isSubmittedRef.current || timeLeft === 0) return;
 
+      if (retryTimersRef.current[questionId]) {
+        clearTimeout(retryTimersRef.current[questionId]);
+        delete retryTimersRef.current[questionId];
+      }
+
       const nextFlag = !flaggedQuestions[questionId];
 
       setFlaggedQuestions((prev) => ({
@@ -619,10 +733,14 @@ export default function ExamRoom() {
       }));
 
       // Persist review flag to backend PostgreSQL
-      persistAnswerChange(questionId, {
-        selectedOption: selectedAnswers[questionId] !== undefined ? selectedAnswers[questionId] : null,
-        isMarkedForReview: nextFlag,
-      });
+      persistAnswerChange(
+        questionId,
+        {
+          selectedOption: selectedAnswers[questionId] !== undefined ? selectedAnswers[questionId] : null,
+          isMarkedForReview: nextFlag,
+        },
+        0
+      );
     },
     [timeLeft, flaggedQuestions, selectedAnswers, persistAnswerChange]
   );
@@ -645,6 +763,7 @@ export default function ExamRoom() {
   // Submit dialog actions
   const handleOpenSubmitDialog = () => {
     if (isSubmittingRef.current || isSubmittedRef.current) return;
+    setSubmitError(null);
     setShowSubmitModal(true);
   };
 
@@ -657,8 +776,46 @@ export default function ExamRoom() {
     if (isSubmittingRef.current || isSubmittedRef.current) return;
     isSubmittingRef.current = true;
     setIsSubmitting(true);
+    setSubmitError(null);
 
     try {
+      // 1. Immediately flush any scheduled retry timers
+      const activeTimers = Object.entries(retryTimersRef.current);
+      if (activeTimers.length > 0) {
+        activeTimers.forEach(([qId, timerId]) => {
+          clearTimeout(timerId);
+          delete retryTimersRef.current[qId];
+          const lastAns = selectedAnswersRef.current[qId];
+          const isFlagged = Boolean(flaggedQuestionsRef.current[qId]);
+          persistAnswerChange(
+            qId,
+            {
+              selectedOption: lastAns !== undefined ? lastAns : null,
+              isMarkedForReview: isFlagged,
+            },
+            MAX_AUTOSAVE_RETRIES
+          );
+        });
+      }
+
+      // 2. Wait for all in-flight answer saves to complete (up to 3.5s timeout)
+      const startWait = Date.now();
+      while (inFlightCountRef.current > 0 && Date.now() - startWait < 3500) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+
+      // 3. Before submitting, verify that all answer changes have been successfully persisted
+      if (failedOperationsRef.current.size > 0) {
+        setIsSubmitting(false);
+        isSubmittingRef.current = false;
+        setSubmitError(
+          `Cannot submit examination: ${failedOperationsRef.current.size} answer change(s) failed to save. Please retry saving before submitting.`
+        );
+        return;
+      }
+
+      // 4. Submit assessment with final answers and target attemptId
+      const currentAttemptId = attemptIdRef.current || attemptId;
       const response = await fetch(`${API_BASE_URL}/exams/${examId}/submit`, {
         method: 'POST',
         headers: {
@@ -666,39 +823,41 @@ export default function ExamRoom() {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          answers: selectedAnswers,
+          answers: selectedAnswersRef.current,
           isTimeout: false,
+          attemptId: currentAttemptId,
         }),
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (cameraStreamRef.current) {
         cameraStreamRef.current.getTracks().forEach((t) => t.stop());
         cameraStreamRef.current = null;
       }
 
-      if (response.ok) {
+      if (response.ok || (data.message && data.result)) {
         setSubmissionResult(data.result);
         setIsSubmitted(true);
         isSubmittedRef.current = true;
         setShowSubmitModal(false);
       } else if (response.status === 403 || data.code === 'ALREADY_SUBMITTED') {
-        setError({
-          message: data.message || 'You have already completed and submitted this examination.',
-          code: 'ALREADY_SUBMITTED',
-          status: response.status,
-        });
+        if (data.result) {
+          setSubmissionResult(data.result);
+        }
+        setIsSubmitted(true);
+        isSubmittedRef.current = true;
         setShowSubmitModal(false);
       } else {
-        alert(data.message || 'Submission failed. Please check network connection and try again.');
+        setIsSubmitting(false);
+        isSubmittingRef.current = false;
+        setSubmitError(data.message || 'Submission failed. Please check network connection and try again.');
       }
     } catch (err) {
       console.error('Submit exam error:', err);
-      alert('Unable to submit exam due to a network error. Please try again.');
-    } finally {
       setIsSubmitting(false);
       isSubmittingRef.current = false;
+      setSubmitError('Unable to submit exam due to a network error. Please try again.');
     }
   };
 
@@ -1409,7 +1568,43 @@ export default function ExamRoom() {
               </div>
             )}
 
-            {failedOperationsRef.current.size > 0 && (
+            {submitError && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '10px',
+                  padding: '10px 14px',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'rgba(239, 68, 68, 0.18)',
+                  border: '1px solid rgba(239, 68, 68, 0.45)',
+                  color: '#fca5a5',
+                  fontSize: '12.5px',
+                  marginBottom: '16px',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <AlertTriangle size={16} flexShrink={0} color="#f87171" />
+                  <span>{submitError}</span>
+                </div>
+                {failedOperationsRef.current.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSubmitError(null);
+                      retryFailedSaves();
+                    }}
+                    className="btn btn-secondary btn-sm"
+                    style={{ padding: '2px 8px', fontSize: '11px', background: 'rgba(255, 255, 255, 0.15)' }}
+                  >
+                    Retry Now
+                  </button>
+                )}
+              </div>
+            )}
+
+            {!submitError && failedOperationsRef.current.size > 0 && (
               <div
                 style={{
                   display: 'flex',
