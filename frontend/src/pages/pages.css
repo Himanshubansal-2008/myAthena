@@ -2020,6 +2020,89 @@
   color: #f3f5f8;
 }
 
+/* Persistent Save Indicator Pill */
+.exam-save-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.exam-save-pill.saved {
+  background: rgba(16, 185, 129, 0.1);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+.exam-save-pill.saving {
+  background: rgba(99, 102, 241, 0.12);
+  color: #a5b4fc;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+.exam-save-pill.failed {
+  background: rgba(239, 68, 68, 0.14);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  padding: 3px 8px;
+}
+
+.btn-retry-inline {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.btn-retry-inline:hover {
+  text-decoration: underline;
+}
+
+.spin-animation {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Save Failed Warning Banner */
+.exam-save-failed-banner {
+  background: rgba(239, 68, 68, 0.12);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  padding: 8px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 13px;
+  position: sticky;
+  top: 57px;
+  z-index: 40;
+}
+
+.exam-save-failed-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* Exam Layout */
 .exam-room-main {
   flex: 1;

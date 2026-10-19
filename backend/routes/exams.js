@@ -389,13 +389,17 @@ router.get("/:id", authenticateToken, async (req, res) => {
       },
     });
 
-    // Populate previously saved answers if any
+    // Populate previously saved answers and review flags if any
     const answersMap = {};
+    const flagsMap = {};
     if (activeAttempt.answers && Array.isArray(activeAttempt.answers)) {
       for (const ans of activeAttempt.answers) {
-        if (ans.questionId && ans.selectedOption !== null && ans.selectedOption !== undefined) {
+        if (ans.questionId && ans.selectedOption !== null && ans.selectedOption !== undefined && ans.selectedOption !== "") {
           const optNum = Number(ans.selectedOption);
           answersMap[ans.questionId] = isNaN(optNum) ? ans.selectedOption : optNum;
+        }
+        if (ans.questionId && ans.isMarkedForReview) {
+          flagsMap[ans.questionId] = true;
         }
       }
     }
@@ -422,6 +426,7 @@ router.get("/:id", authenticateToken, async (req, res) => {
         deadlineAt: activeAttempt.deadlineAt,
       },
       answers: answersMap,
+      flags: flagsMap,
     });
   } catch (error) {
     console.error("Fetch exam session error:", error);
@@ -432,51 +437,147 @@ router.get("/:id", authenticateToken, async (req, res) => {
   }
 });
 
+// Map to track latest client timestamps and sequences per attemptId:questionId
+// to prevent stale requests from overwriting newer answers due to network races
+const latestAnswerUpdates = new Map();
+
+function trackAnswerUpdate(key, timestamp, sequence) {
+  if (latestAnswerUpdates.size > 5000) {
+    const keysToDelete = Array.from(latestAnswerUpdates.keys()).slice(0, 1000);
+    keysToDelete.forEach((k) => latestAnswerUpdates.delete(k));
+  }
+  latestAnswerUpdates.set(key, { timestamp, sequence, updatedAt: Date.now() });
+}
+
 /**
  * POST /api/exams/:id/answer
- * Auto-save candidate selected option for an in-progress attempt
+ * Auto-save candidate selected option or review flag for an in-progress attempt
  */
 router.post("/:id/answer", authenticateToken, async (req, res) => {
   try {
     const examId = req.params.id;
     const userId = req.user.userId;
-    const { questionId, selectedOption } = req.body;
+    const { questionId, selectedOption, isMarkedForReview, attemptId, clientTimestamp, sequence } = req.body;
 
-    const activeAttempt = await prisma.attempt.findFirst({
+    if (!questionId) {
+      return res.status(400).json({
+        message: "Question ID is required.",
+        code: "INVALID_QUESTION_ID",
+      });
+    }
+
+    // Retrieve attempts for authenticated user and exam
+    const existingAttempts = await prisma.attempt.findMany({
       where: {
         userId,
         examId,
-        status: "IN_PROGRESS",
       },
+      orderBy: { startedAt: "desc" },
     });
 
-    if (!activeAttempt) {
-      return res.status(404).json({ message: "Active examination attempt not found." });
+    // If attemptId was passed, match that specific attempt; otherwise target most recent
+    const targetAttempt = attemptId
+      ? existingAttempts.find((a) => a.id === attemptId)
+      : existingAttempts[0];
+
+    if (!targetAttempt) {
+      return res.status(404).json({
+        message: "Examination attempt not found.",
+        code: "ATTEMPT_NOT_FOUND",
+      });
     }
 
-    if (activeAttempt.deadlineAt && new Date() > new Date(activeAttempt.deadlineAt)) {
+    // Server-side check: Reject modifications to submitted sessions
+    if (targetAttempt.status === "SUBMITTED" || targetAttempt.status === "AUTO_SUBMITTED") {
+      return res.status(403).json({
+        message: "Modifications to submitted examination sessions are rejected.",
+        code: "ALREADY_SUBMITTED",
+      });
+    }
+
+    if (targetAttempt.status !== "IN_PROGRESS") {
+      return res.status(403).json({
+        message: "Examination session is not active.",
+        code: "INVALID_SESSION_STATUS",
+      });
+    }
+
+    if (targetAttempt.deadlineAt && new Date() > new Date(targetAttempt.deadlineAt)) {
       return res.status(403).json({
         message: "Assessment time has expired. Answers can no longer be recorded.",
         code: "EXAM_TIMEOUT",
       });
     }
 
+    // Prevent rapid answer changes from overwriting newer answers due to network races
+    const updateKey = `${targetAttempt.id}:${questionId}`;
+    const reqTimestamp = clientTimestamp ? Number(clientTimestamp) : null;
+    const reqSequence = sequence !== undefined && sequence !== null ? Number(sequence) : null;
+
+    if (reqTimestamp) {
+      const existingTracked = latestAnswerUpdates.get(updateKey);
+      if (existingTracked) {
+        if (existingTracked.timestamp > reqTimestamp) {
+          return res.json({
+            ok: true,
+            stale: true,
+            message: "Stale answer update ignored.",
+            ignored: true,
+          });
+        }
+        if (existingTracked.timestamp === reqTimestamp && reqSequence !== null && existingTracked.sequence > reqSequence) {
+          return res.json({
+            ok: true,
+            stale: true,
+            message: "Stale answer update ignored.",
+            ignored: true,
+          });
+        }
+      }
+    }
+
+    // Determine new values, correctly handling null/cleared answer
+    const existingAnswer = await prisma.attemptAnswer.findUnique({
+      where: {
+        attemptId_questionId: {
+          attemptId: targetAttempt.id,
+          questionId,
+        },
+      },
+    });
+
+    let newSelectedOption = existingAnswer ? existingAnswer.selectedOption : null;
+    if (selectedOption !== undefined) {
+      newSelectedOption = (selectedOption === null || selectedOption === "") ? null : String(selectedOption);
+    }
+
+    let newIsMarkedForReview = existingAnswer ? existingAnswer.isMarkedForReview : false;
+    if (typeof isMarkedForReview === "boolean") {
+      newIsMarkedForReview = isMarkedForReview;
+    }
+
     const answer = await prisma.attemptAnswer.upsert({
       where: {
         attemptId_questionId: {
-          attemptId: activeAttempt.id,
+          attemptId: targetAttempt.id,
           questionId,
         },
       },
       update: {
-        selectedOption: String(selectedOption),
+        selectedOption: newSelectedOption,
+        isMarkedForReview: newIsMarkedForReview,
       },
       create: {
-        attemptId: activeAttempt.id,
+        attemptId: targetAttempt.id,
         questionId,
-        selectedOption: String(selectedOption),
+        selectedOption: newSelectedOption,
+        isMarkedForReview: newIsMarkedForReview,
       },
     });
+
+    if (reqTimestamp) {
+      trackAnswerUpdate(updateKey, reqTimestamp, reqSequence || 0);
+    }
 
     res.json({ ok: true, answer });
   } catch (error) {
