@@ -3,6 +3,8 @@ import { useAuth } from '../context.jsx';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Shield,
+  ShieldAlert,
+  ShieldCheck,
   FileText,
   LogOut,
   ArrowRight,
@@ -11,6 +13,7 @@ import {
   Clock,
   RotateCcw,
   FileCheck,
+  AlertTriangle,
 } from 'lucide-react';
 import './pages.css';
 
@@ -24,6 +27,7 @@ export default function Dashboard() {
   const [backendExams, setBackendExams] = useState([]);
   const [activeSession, setActiveSession] = useState(null);
   const [loadingResults, setLoadingResults] = useState(false);
+  const [resultsError, setResultsError] = useState(null);
 
   useEffect(() => {
     if (location.state?.tab) {
@@ -34,6 +38,7 @@ export default function Dashboard() {
   const fetchExamsAndResults = useCallback(async () => {
     if (!token) return;
     setLoadingResults(true);
+    setResultsError(null);
     try {
       const [resultsRes, examsRes, activeSessionRes] = await Promise.all([
         fetch('http://localhost:5050/api/exams/results/my-results', {
@@ -50,6 +55,9 @@ export default function Dashboard() {
       if (resultsRes.ok) {
         const resultsData = await resultsRes.json();
         setPastResults(resultsData.results || []);
+      } else {
+        const errData = await resultsRes.json().catch(() => ({}));
+        setResultsError(errData.message || 'Failed to retrieve past examination results.');
       }
 
       if (examsRes.ok) {
@@ -65,6 +73,7 @@ export default function Dashboard() {
       }
     } catch (err) {
       console.warn('Dashboard fetch error:', err);
+      setResultsError('Network connectivity failure. Unable to contact Athena assessment server.');
     } finally {
       setLoadingResults(false);
     }
@@ -448,7 +457,70 @@ export default function Dashboard() {
                 </button>
               </div>
 
-              {pastResults.length === 0 ? (
+              {/* ERROR STATE */}
+              {resultsError ? (
+                <div
+                  className="surface-card"
+                  style={{
+                    padding: '36px 28px',
+                    textAlign: 'center',
+                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                    background: 'rgba(239, 68, 68, 0.05)',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: '44px',
+                      height: '44px',
+                      borderRadius: '50%',
+                      background: 'rgba(239, 68, 68, 0.12)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      margin: '0 auto 14px',
+                      color: '#f87171',
+                    }}
+                  >
+                    <AlertTriangle size={22} />
+                  </div>
+                  <h3 style={{ fontSize: '15px', fontWeight: 600, color: '#f8fafc', marginBottom: '6px' }}>
+                    Unable to Load Past Results
+                  </h3>
+                  <p style={{ fontSize: '13px', color: 'var(--text-secondary)', maxWidth: '440px', margin: '0 auto 18px', lineHeight: 1.5 }}>
+                    {resultsError}
+                  </p>
+                  <button
+                    onClick={fetchExamsAndResults}
+                    className="btn btn-secondary btn-sm"
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                  >
+                    <RotateCcw size={13} />
+                    <span>Try Again</span>
+                  </button>
+                </div>
+              ) : loadingResults && pastResults.length === 0 ? (
+                /* LOADING STATE */
+                <div className="surface-card" style={{ padding: '48px 32px', textAlign: 'center' }}>
+                  <div
+                    style={{
+                      width: '40px',
+                      height: '40px',
+                      borderRadius: '50%',
+                      border: '3px solid rgba(165, 180, 252, 0.2)',
+                      borderTopColor: 'var(--primary-color, #6366f1)',
+                      margin: '0 auto 16px',
+                      animation: 'spin 1s linear infinite',
+                    }}
+                  />
+                  <h3 style={{ fontSize: '15px', fontWeight: 600, color: '#f3f5f8', marginBottom: '6px' }}>
+                    Loading Authoritative Exam Records...
+                  </h3>
+                  <p style={{ fontSize: '12.5px', color: 'var(--text-muted)' }}>
+                    Retrieving graded submissions and proctoring telemetry from database.
+                  </p>
+                </div>
+              ) : pastResults.length === 0 ? (
+                /* EMPTY STATE */
                 <div className="surface-card" style={{ padding: '48px 32px', textAlign: 'center' }}>
                   <div
                     style={{
@@ -480,6 +552,7 @@ export default function Dashboard() {
                   </button>
                 </div>
               ) : (
+                /* POPULATED RESULTS LIST */
                 <div className="exam-card-list">
                   {pastResults.map((result) => {
                     const formattedDate = result.submittedAt
@@ -491,6 +564,9 @@ export default function Dashboard() {
                           minute: '2-digit',
                         })
                       : 'Completed';
+
+                    const hasIncidents = (result.incidentCount || 0) > 0;
+                    const byType = result.incidentCountsByType || {};
 
                     return (
                       <div key={result.attemptId || result.examId} className="surface-card exam-item-card">
@@ -570,13 +646,44 @@ export default function Dashboard() {
                           </div>
 
                           <div>
-                            <div className="exam-spec-label">Proctoring Status</div>
+                            <div className="exam-spec-label">Proctoring Telemetry</div>
                             <div className="exam-spec-value" style={{ display: 'flex', alignItems: 'center', gap: '5px', marginTop: '2px' }}>
-                              <Shield size={12} color={result.incidentCount === 0 ? '#34d399' : '#fbbf24'} />
-                              <span style={{ color: result.incidentCount === 0 ? '#34d399' : '#fbbf24', fontSize: '11.5px' }}>
-                                {result.incidentCount === 0 ? 'Clean (0 Flags)' : `${result.incidentCount} Incident Flags`}
-                              </span>
+                              {!hasIncidents ? (
+                                <>
+                                  <ShieldCheck size={14} color="#34d399" />
+                                  <span style={{ color: '#34d399', fontSize: '11.5px', fontWeight: 600 }}>
+                                    Clean Session (0 Events)
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  <ShieldAlert size={14} color="#fbbf24" />
+                                  <span style={{ color: '#fbbf24', fontSize: '11.5px', fontWeight: 600 }}>
+                                    {result.incidentCount} Recorded Event{result.incidentCount === 1 ? '' : 's'}
+                                  </span>
+                                </>
+                              )}
                             </div>
+                            {hasIncidents && Object.keys(byType).length > 0 && (
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '5px' }}>
+                                {Object.entries(byType).map(([type, count]) => (
+                                  <span
+                                    key={type}
+                                    style={{
+                                      fontSize: '9.5px',
+                                      fontFamily: 'var(--font-mono)',
+                                      padding: '1px 5px',
+                                      borderRadius: '4px',
+                                      background: 'rgba(239, 68, 68, 0.12)',
+                                      color: '#fca5a5',
+                                      border: '1px solid rgba(239, 68, 68, 0.25)',
+                                    }}
+                                  >
+                                    {type === 'WINDOW_BLUR' ? 'Window Blur' : type === 'FULLSCREEN_EXIT' ? 'Fullscreen Exit' : type}: {count}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         </div>
 
@@ -587,6 +694,7 @@ export default function Dashboard() {
                           </div>
                           {result.attemptId && (
                             <button
+                              id={`btn-review-result-${result.attemptId}`}
                               onClick={() => navigate(`/results/${result.attemptId}`)}
                               className="btn btn-secondary btn-sm"
                               style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}

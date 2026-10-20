@@ -179,6 +179,7 @@ async function runTests() {
 
   const testUserIds = [];
   const testAttemptIds = [];
+  const testExamIds = [];
 
   try {
     const exam = await prisma.exam.findUnique({
@@ -206,12 +207,12 @@ async function runTests() {
     }
 
     // Helper to create in-progress attempt
-    async function createTestAttempt(userId) {
+    async function createTestAttempt(userId, targetExamId = "cs-401") {
       const now = new Date();
       const attempt = await prisma.attempt.create({
         data: {
           userId,
-          examId: "cs-401",
+          examId: targetExamId,
           status: "IN_PROGRESS",
           startedAt: now,
           deadlineAt: new Date(now.getTime() + 60 * 60 * 1000),
@@ -729,6 +730,161 @@ async function runTests() {
       assert.strictEqual(resultRes.data.incidents[0].type, "WINDOW_BLUR");
     });
 
+    // --------------------------------------------------------------------------
+    // SECTION 4: Exam History & Proctoring Summaries Integration Tests (Day 5, Commit 4)
+    // --------------------------------------------------------------------------
+    console.log("\n--- Section 4: Exam History & Proctoring Summaries Tests ---");
+
+    // TEST 18: Student with multiple completed exams sees the complete history with scores and proctoring summaries
+    await asyncTest("Integration: Candidate with multiple completed exams sees complete history and proctoring summaries", async () => {
+      const { user, token } = await createTestCandidate("history_multi");
+
+      const exam2Id = `test-exam-${Date.now()}`;
+      testExamIds.push(exam2Id);
+      const testExam2 = await prisma.exam.create({
+        data: {
+          id: exam2Id,
+          title: "Distributed Systems Architecture",
+          totalMarks: 50,
+          status: "PUBLISHED",
+          durationMinutes: 60,
+          creatorId: user.id,
+          questions: {
+            create: [
+              {
+                order: 1,
+                text: "What is Raft?",
+                options: ["Consensus algorithm", "Hashing function", "Network protocol"],
+                correctAnswer: "0",
+                marks: 50,
+              },
+            ],
+          },
+        },
+        include: { questions: true },
+      });
+
+      // Exam 1: Attempt with 2 incidents (1 blur, 1 fullscreen exit)
+      const attempt1 = await createTestAttempt(user.id, "cs-401");
+      await apiRequest(`/cs-401/incident`, "POST", {
+        attemptId: attempt1.id,
+        type: "WINDOW_BLUR",
+        details: "Blur in Exam 1",
+      }, token);
+      await apiRequest(`/cs-401/incident`, "POST", {
+        attemptId: attempt1.id,
+        type: "FULLSCREEN_EXIT",
+        details: "Exit fullscreen in Exam 1",
+      }, token);
+      await apiRequest(`/cs-401/submit`, "POST", {
+        attemptId: attempt1.id,
+        answers: { [exam.questions[0].id]: exam.questions[0].correctAnswer },
+      }, token);
+
+      // Exam 2: Attempt on second exam with 0 incidents (Clean session)
+      const attempt2 = await createTestAttempt(user.id, exam2Id);
+      await apiRequest(`/${exam2Id}/submit`, "POST", {
+        attemptId: attempt2.id,
+        answers: {
+          [testExam2.questions[0].id]: testExam2.questions[0].correctAnswer,
+        },
+      }, token);
+
+      // Retrieve history via /results/my-results
+      const historyRes = await apiRequest(`/results/my-results`, "GET", null, token);
+      assert.strictEqual(historyRes.status, 200);
+      assert(Array.isArray(historyRes.data.results), "Must return results array");
+      assert.strictEqual(historyRes.data.results.length, 2, "Must return exactly 2 completed exams");
+
+      // Find individual exam items
+      const item1 = historyRes.data.results.find((r) => r.attemptId === attempt1.id);
+      const item2 = historyRes.data.results.find((r) => r.attemptId === attempt2.id);
+
+      assert(item1, "Attempt 1 record must be present");
+      assert(item2, "Attempt 2 record must be present");
+
+      // Verify Attempt 1 proctoring summary
+      assert.strictEqual(item1.incidentCount, 2);
+      assert.strictEqual(item1.proctoringSummary.total, 2);
+      assert.strictEqual(item1.proctoringSummary.hasIncidents, true);
+      assert.strictEqual(item1.incidentCountsByType.WINDOW_BLUR, 1);
+      assert.strictEqual(item1.incidentCountsByType.FULLSCREEN_EXIT, 1);
+      assert.strictEqual(item1.score, 25);
+
+      // Verify Attempt 2 proctoring summary (Clean session)
+      assert.strictEqual(item2.incidentCount, 0);
+      assert.strictEqual(item2.proctoringSummary.total, 0);
+      assert.strictEqual(item2.proctoringSummary.hasIncidents, false);
+      assert.deepStrictEqual(item2.incidentCountsByType, {});
+      assert.strictEqual(item2.score, 50);
+    });
+
+    // TEST 19: Opening past result returns authoritative answers, breakdown, and proctoring summary
+    await asyncTest("Integration: Opening past result returns authoritative answers and proctoring summary", async () => {
+      const { user, token } = await createTestCandidate("history_detail");
+      const attempt = await createTestAttempt(user.id);
+
+      // Record 1 incident
+      await apiRequest(`/cs-401/incident`, "POST", {
+        attemptId: attempt.id,
+        type: "WINDOW_BLUR",
+        details: "Focus lost during section 2",
+      }, token);
+
+      // Submit
+      await apiRequest(`/cs-401/submit`, "POST", {
+        attemptId: attempt.id,
+        answers: { [exam.questions[0].id]: exam.questions[0].correctAnswer },
+      }, token);
+
+      // Re-fetch via detailed result endpoint
+      const detailRes = await apiRequest(`/results/${attempt.id}`, "GET", null, token);
+      assert.strictEqual(detailRes.status, 200);
+      assert.strictEqual(detailRes.data.attemptId, attempt.id);
+      assert.strictEqual(detailRes.data.score, 25);
+      assert.strictEqual(detailRes.data.incidentCount, 1);
+      assert.strictEqual(detailRes.data.proctoringSummary.total, 1);
+      assert.strictEqual(detailRes.data.proctoringSummary.hasIncidents, true);
+      assert.strictEqual(detailRes.data.proctoringSummary.byType.WINDOW_BLUR, 1);
+      assert.strictEqual(detailRes.data.incidents.length, 1);
+      assert.strictEqual(detailRes.data.incidents[0].type, "WINDOW_BLUR");
+      assert(Array.isArray(detailRes.data.questions), "Must include questions review");
+    });
+
+    // TEST 20: Candidate cannot access another candidate's history or results
+    await asyncTest("Integration: Candidate history is strictly partitioned by authenticated user ID", async () => {
+      const { user: userA, token: tokenA } = await createTestCandidate("partition_a");
+      const { user: userB, token: tokenB } = await createTestCandidate("partition_b");
+
+      const attemptA = await createTestAttempt(userA.id);
+      await apiRequest(`/cs-401/submit`, "POST", { attemptId: attemptA.id, answers: {} }, tokenA);
+
+      // Candidate B calls /results/my-results
+      const resB = await apiRequest(`/results/my-results`, "GET", null, tokenB);
+      assert.strictEqual(resB.status, 200);
+      assert.strictEqual(resB.data.results.length, 0, "Candidate B must not see Candidate A's results in history");
+
+      // Candidate B directly tries to access Candidate A's result ID
+      const tamperedRes = await apiRequest(`/results/${attemptA.id}`, "GET", null, tokenB);
+      assert.strictEqual(tamperedRes.status, 404, "Direct URL tampering must be rejected with 404");
+    });
+
+    // TEST 21: Clean exam with zero incidents displays correct proctoring summary in detailed results
+    await asyncTest("Integration: Exam with zero incidents provides clean proctoring summary and empty timeline", async () => {
+      const { user, token } = await createTestCandidate("clean_summary");
+      const attempt = await createTestAttempt(user.id);
+
+      await apiRequest(`/cs-401/submit`, "POST", { attemptId: attempt.id, answers: {} }, token);
+
+      const detailRes = await apiRequest(`/results/${attempt.id}`, "GET", null, token);
+      assert.strictEqual(detailRes.status, 200);
+      assert.strictEqual(detailRes.data.incidentCount, 0);
+      assert.strictEqual(detailRes.data.proctoringSummary.total, 0);
+      assert.strictEqual(detailRes.data.proctoringSummary.hasIncidents, false);
+      assert.deepStrictEqual(detailRes.data.proctoringSummary.byType, {});
+      assert.deepStrictEqual(detailRes.data.incidents, []);
+    });
+
     server.close();
   } finally {
     // Cleanup created test records so database remains pristine
@@ -737,6 +893,10 @@ async function runTests() {
       await prisma.result.deleteMany({ where: { attemptId: { in: testAttemptIds } } });
       await prisma.attemptAnswer.deleteMany({ where: { attemptId: { in: testAttemptIds } } });
       await prisma.attempt.deleteMany({ where: { id: { in: testAttemptIds } } });
+    }
+    if (testExamIds.length > 0) {
+      await prisma.question.deleteMany({ where: { examId: { in: testExamIds } } });
+      await prisma.exam.deleteMany({ where: { id: { in: testExamIds } } });
     }
     if (testUserIds.length > 0) {
       await prisma.user.deleteMany({ where: { id: { in: testUserIds } } });

@@ -97,6 +97,14 @@ router.get("/results/my-results", authenticateToken, async (req, res) => {
       include: {
         exam: true,
         result: true,
+        incidents: {
+          select: {
+            id: true,
+            type: true,
+            occurredAt: true,
+          },
+          orderBy: { occurredAt: "asc" },
+        },
         _count: {
           select: { incidents: true },
         },
@@ -125,6 +133,15 @@ router.get("/results/my-results", authenticateToken, async (req, res) => {
 
       const percentage = Number(((resData.score / resData.totalMarks) * 100).toFixed(1));
 
+      const incidentCountsByType = {};
+      if (Array.isArray(att.incidents)) {
+        att.incidents.forEach((inc) => {
+          incidentCountsByType[inc.type] = (incidentCountsByType[inc.type] || 0) + 1;
+        });
+      }
+
+      const totalIncidents = att._count?.incidents ?? (att.incidents?.length || 0);
+
       return {
         attemptId: att.id,
         examId: att.exam.id,
@@ -140,7 +157,13 @@ router.get("/results/my-results", authenticateToken, async (req, res) => {
         unansweredCount: resData.unansweredCount,
         status: "COMPLETED",
         submittedAt: att.submittedAt || att.updatedAt,
-        incidentCount: att._count.incidents,
+        incidentCount: totalIncidents,
+        incidentCountsByType,
+        proctoringSummary: {
+          total: totalIncidents,
+          byType: incidentCountsByType,
+          hasIncidents: totalIncidents > 0,
+        },
       };
     });
 
@@ -276,6 +299,15 @@ router.get("/results/:attemptId", authenticateToken, async (req, res) => {
     const percentage = Number(((attempt.result.score / attempt.result.totalMarks) * 100).toFixed(1));
     const passed = percentage >= 40.0;
 
+    const incidentCountsByType = {};
+    if (Array.isArray(attempt.incidents)) {
+      attempt.incidents.forEach((inc) => {
+        incidentCountsByType[inc.type] = (incidentCountsByType[inc.type] || 0) + 1;
+      });
+    }
+
+    const totalIncidents = attempt.incidents?.length || 0;
+
     res.json({
       attemptId: attempt.id,
       examId: attempt.exam.id,
@@ -295,6 +327,13 @@ router.get("/results/:attemptId", authenticateToken, async (req, res) => {
       wrongCount: attempt.result.wrongCount,
       unansweredCount: attempt.result.unansweredCount,
       totalQuestions: attempt.exam.questions.length,
+      incidentCount: totalIncidents,
+      incidentCountsByType,
+      proctoringSummary: {
+        total: totalIncidents,
+        byType: incidentCountsByType,
+        hasIncidents: totalIncidents > 0,
+      },
       incidents: attempt.incidents,
       questions: questionReviews,
     });

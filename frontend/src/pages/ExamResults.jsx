@@ -453,6 +453,27 @@ export default function ExamResults() {
                 Skipped (0 penalty)
               </div>
             </div>
+
+            {/* Proctoring Telemetry */}
+            <div
+              style={{
+                background: (resultData.incidents && resultData.incidents.length > 0) ? 'rgba(239, 68, 68, 0.05)' : 'rgba(16, 185, 129, 0.05)',
+                border: (resultData.incidents && resultData.incidents.length > 0) ? '1px solid rgba(239, 68, 68, 0.25)' : '1px solid rgba(16, 185, 129, 0.25)',
+                borderRadius: 'var(--radius-sm)',
+                padding: '16px 18px',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: (resultData.incidents && resultData.incidents.length > 0) ? '#f87171' : '#34d399', textTransform: 'uppercase', letterSpacing: '0.04em', fontWeight: 600 }}>
+                {(resultData.incidents && resultData.incidents.length > 0) ? <ShieldAlert size={13} /> : <ShieldCheck size={13} />}
+                <span>Proctoring Telemetry</span>
+              </div>
+              <div style={{ fontSize: '26px', fontWeight: 800, color: '#ffffff', marginTop: '6px', fontFamily: 'var(--font-mono)' }}>
+                {resultData.incidents ? resultData.incidents.length : 0}
+              </div>
+              <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                {(resultData.incidents && resultData.incidents.length > 0) ? 'Recorded Focus Events' : 'Clean Session (0 Flags)'}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -981,79 +1002,138 @@ export default function ExamResults() {
           </div>
 
           {resultData.incidents && resultData.incidents.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {resultData.incidents.map((incident, idx) => {
-                const eventTime = new Date(incident.occurredAt);
-                const formattedTime = !isNaN(eventTime.getTime())
-                  ? eventTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-                  : 'Time unavailable';
-                const formattedDate = !isNaN(eventTime.getTime())
-                  ? eventTime.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
-                  : '';
+            <div>
+              {/* Category Breakdown & Telemetry Notice */}
+              <div
+                style={{
+                  background: 'rgba(15, 23, 42, 0.45)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '14px 18px',
+                  marginBottom: '16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexWrap: 'wrap',
+                  gap: '12px',
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 600, letterSpacing: '0.04em', marginBottom: '6px' }}>
+                    Incident Breakdown by Category
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                    {Object.entries(
+                      resultData.incidents.reduce((acc, inc) => {
+                        acc[inc.type] = (acc[inc.type] || 0) + 1;
+                        return acc;
+                      }, {})
+                    ).map(([type, count]) => {
+                      const label =
+                        type === 'WINDOW_BLUR'
+                          ? 'Window Blur / Focus Lost'
+                          : type === 'FULLSCREEN_EXIT'
+                          ? 'Fullscreen Exited'
+                          : type.replace(/_/g, ' ');
+                      return (
+                        <span
+                          key={type}
+                          style={{
+                            fontSize: '11.5px',
+                            fontWeight: 600,
+                            padding: '3px 8px',
+                            borderRadius: '6px',
+                            background: 'rgba(239, 68, 68, 0.1)',
+                            border: '1px solid rgba(239, 68, 68, 0.25)',
+                            color: '#fca5a5',
+                          }}
+                        >
+                          {label}: {count}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
 
-                const incidentLabel =
-                  incident.type === 'WINDOW_BLUR'
-                    ? 'Window Blur / Tab Switch'
-                    : incident.type === 'FULLSCREEN_EXIT'
-                    ? 'Exited Fullscreen Mode'
-                    : incident.type.replace(/_/g, ' ');
+                <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', maxWidth: '420px', lineHeight: 1.4 }}>
+                  Athena automated focus logs serve as an audit trail for proctoring review. Candidates are evaluated on academic merit, and focus interruptions do not apply automated scoring penalties.
+                </div>
+              </div>
 
-                return (
-                  <div
-                    key={incident.id || idx}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      justifyContent: 'space-between',
-                      background: 'rgba(15, 23, 42, 0.4)',
-                      border: '1px solid var(--border-subtle)',
-                      borderRadius: 'var(--radius-sm)',
-                      padding: '12px 16px',
-                      gap: '12px',
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
-                      <AlertTriangle size={16} color="#f87171" style={{ marginTop: '2px', flexShrink: 0 }} />
-                      <div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
-                          <span style={{ fontSize: '13px', fontWeight: 600, color: '#f8fafc' }}>
-                            {incidentLabel}
-                          </span>
-                          <span
-                            style={{
-                              fontSize: '10px',
-                              fontFamily: 'var(--font-mono)',
-                              textTransform: 'uppercase',
-                              padding: '1px 6px',
-                              borderRadius: '4px',
-                              background: 'rgba(239, 68, 68, 0.15)',
-                              color: '#fca5a5',
-                            }}
-                          >
-                            {incident.type}
-                          </span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {resultData.incidents.map((incident, idx) => {
+                  const eventTime = new Date(incident.occurredAt);
+                  const formattedTime = !isNaN(eventTime.getTime())
+                    ? eventTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                    : 'Time unavailable';
+                  const formattedDate = !isNaN(eventTime.getTime())
+                    ? eventTime.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+                    : '';
+
+                  const incidentLabel =
+                    incident.type === 'WINDOW_BLUR'
+                      ? 'Window Blur / Tab Switch'
+                      : incident.type === 'FULLSCREEN_EXIT'
+                      ? 'Exited Fullscreen Mode'
+                      : incident.type.replace(/_/g, ' ');
+
+                  return (
+                    <div
+                      key={incident.id || idx}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        justifyContent: 'space-between',
+                        background: 'rgba(15, 23, 42, 0.4)',
+                        border: '1px solid var(--border-subtle)',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '12px 16px',
+                        gap: '12px',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                        <AlertTriangle size={16} color="#f87171" style={{ marginTop: '2px', flexShrink: 0 }} />
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
+                            <span style={{ fontSize: '13px', fontWeight: 600, color: '#f8fafc' }}>
+                              {incidentLabel}
+                            </span>
+                            <span
+                              style={{
+                                fontSize: '10px',
+                                fontFamily: 'var(--font-mono)',
+                                textTransform: 'uppercase',
+                                padding: '1px 6px',
+                                borderRadius: '4px',
+                                background: 'rgba(239, 68, 68, 0.15)',
+                                color: '#fca5a5',
+                              }}
+                            >
+                              {incident.type}
+                            </span>
+                          </div>
+                          {(incident.description || incident.details) && (
+                            <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                              {incident.description || incident.details}
+                            </div>
+                          )}
                         </div>
-                        {(incident.description || incident.details) && (
-                          <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.4 }}>
-                            {incident.description || incident.details}
+                      </div>
+
+                      <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                        <div style={{ fontSize: '12px', fontFamily: 'var(--font-mono)', color: 'var(--text-primary)', fontWeight: 600 }}>
+                          {formattedTime}
+                        </div>
+                        {formattedDate && (
+                          <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                            {formattedDate}
                           </div>
                         )}
                       </div>
                     </div>
-
-                    <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                      <div style={{ fontSize: '12px', fontFamily: 'var(--font-mono)', color: 'var(--text-primary)', fontWeight: 600 }}>
-                        {formattedTime}
-                      </div>
-                      {formattedDate && (
-                        <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
-                          {formattedDate}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           ) : (
             <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
