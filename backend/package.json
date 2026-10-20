@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node --watch index.js",
     "start": "node index.js",
-    "test": "node tests/grading.test.js"
+    "test": "node tests/grading.test.js && node tests/auth_authorization.test.js"
   },
   "keywords": [
     "athena",

@@ -1,9 +1,13 @@
 const express = require("express");
 const prisma = require("../prisma");
-const { authenticateToken } = require("../middleware/authMiddleware");
+const { authenticateToken, allowRoles, enforceCandidateIdentity } = require("../middleware/authMiddleware");
 const { evaluateAnswer, calculateGrading } = require("../utils/grading");
 
 const router = express.Router();
+
+// Enforce token verification and candidate identity on all exam endpoints
+router.use(authenticateToken);
+router.use(enforceCandidateIdentity);
 
 /**
  * Authoritatively grades an attempt, persists its Result record,
@@ -201,7 +205,7 @@ router.get("/results/:attemptId", authenticateToken, async (req, res) => {
       },
     });
 
-    if (!attempt || attempt.userId !== userId) {
+    if (!attempt || (attempt.userId !== userId && req.user.role !== "ADMIN")) {
       return res.status(404).json({ message: "Result not found or unauthorized access." });
     }
 
@@ -540,7 +544,7 @@ router.get("/session/:attemptId", authenticateToken, async (req, res) => {
     }
 
     // Security check: Candidate can only access their own session
-    if (attempt.userId !== userId) {
+    if (attempt.userId !== userId && req.user.role !== "ADMIN") {
       return res.status(403).json({
         message: "Unauthorized: You do not own this examination session.",
         code: "FORBIDDEN",
@@ -623,10 +627,22 @@ router.get("/:id", authenticateToken, async (req, res) => {
       const specifiedAttempt = await prisma.attempt.findUnique({
         where: { id: req.query.attemptId },
       });
-      if (specifiedAttempt && specifiedAttempt.userId !== userId) {
+      if (!specifiedAttempt) {
+        return res.status(404).json({
+          message: "Examination attempt not found.",
+          code: "ATTEMPT_NOT_FOUND",
+        });
+      }
+      if (specifiedAttempt.userId !== userId && req.user.role !== "ADMIN") {
         return res.status(403).json({
           message: "Unauthorized: You do not own this examination session.",
           code: "FORBIDDEN",
+        });
+      }
+      if (specifiedAttempt.examId !== exam.id) {
+        return res.status(400).json({
+          message: "Examination attempt does not belong to the specified exam.",
+          code: "INVALID_EXAM_SESSION",
         });
       }
     }
@@ -800,40 +816,63 @@ router.get("/:id/timer", authenticateToken, async (req, res) => {
     const examId = req.params.id;
     const userId = req.user.userId;
 
+    let targetAttempt = null;
     if (req.query.attemptId) {
       const specifiedAttempt = await prisma.attempt.findUnique({
         where: { id: req.query.attemptId },
+        include: { result: true },
       });
-      if (specifiedAttempt && specifiedAttempt.userId !== userId) {
+      if (!specifiedAttempt) {
+        return res.status(404).json({
+          message: "Examination attempt not found.",
+          code: "ATTEMPT_NOT_FOUND",
+        });
+      }
+      if (specifiedAttempt.userId !== userId && req.user.role !== "ADMIN") {
         return res.status(403).json({
           message: "Unauthorized: You do not own this examination session.",
           code: "FORBIDDEN",
         });
       }
+      if (specifiedAttempt.examId !== examId) {
+        return res.status(400).json({
+          message: "Examination attempt does not belong to the specified exam.",
+          code: "INVALID_EXAM_SESSION",
+        });
+      }
+      targetAttempt = specifiedAttempt;
     }
 
-    const attempts = await prisma.attempt.findMany({
-      where: { userId, examId },
-      orderBy: { startedAt: "desc" },
-      include: { result: true },
-    });
+    if (!targetAttempt) {
+      const attempts = await prisma.attempt.findMany({
+        where: { userId, examId },
+        orderBy: { startedAt: "desc" },
+        include: { result: true },
+      });
 
-    const submitted = attempts.find(
-      (a) => a.status === "SUBMITTED" || a.status === "AUTO_SUBMITTED"
-    );
+      const submitted = attempts.find(
+        (a) => a.status === "SUBMITTED" || a.status === "AUTO_SUBMITTED"
+      );
 
-    if (submitted) {
+      if (submitted) {
+        targetAttempt = submitted;
+      } else {
+        targetAttempt = attempts.find((a) => a.status === "IN_PROGRESS");
+      }
+    }
+
+    if (targetAttempt && (targetAttempt.status === "SUBMITTED" || targetAttempt.status === "AUTO_SUBMITTED")) {
       return res.json({
         serverTime: new Date().toISOString(),
-        attemptId: submitted.id,
-        status: submitted.status,
+        attemptId: targetAttempt.id,
+        status: targetAttempt.status,
         isExpired: true,
         remainingSeconds: 0,
-        result: submitted.result,
+        result: targetAttempt.result,
       });
     }
 
-    const activeAttempt = attempts.find((a) => a.status === "IN_PROGRESS");
+    const activeAttempt = targetAttempt;
     if (!activeAttempt) {
       return res.status(404).json({
         message: "No active examination session found.",
@@ -988,6 +1027,22 @@ router.post("/:id/answer", authenticateToken, async (req, res) => {
         }
 
         return { expired: true, freshAttempt };
+      }
+
+      // Verify question belongs to this exam
+      const question = await tx.question.findFirst({
+        where: {
+          id: questionId,
+          examId: freshAttempt.examId,
+        },
+      });
+
+      if (!question) {
+        throw {
+          status: 404,
+          code: "INVALID_QUESTION_ID",
+          message: "Question not found or does not belong to this examination.",
+        };
       }
 
       // Prevent rapid answer changes from overwriting newer answers due to network races
@@ -1271,8 +1326,11 @@ router.get("/:id/incidents", authenticateToken, async (req, res) => {
       if (!specifiedAttempt) {
         return res.status(404).json({ message: "Examination attempt not found." });
       }
-      if (specifiedAttempt.userId !== userId) {
+      if (specifiedAttempt.userId !== userId && req.user.role !== "ADMIN") {
         return res.status(403).json({ message: "Unauthorized: You do not own this examination session." });
+      }
+      if (specifiedAttempt.examId !== examId) {
+        return res.status(400).json({ message: "Examination attempt does not belong to the specified exam." });
       }
       targetAttempt = specifiedAttempt;
     } else {

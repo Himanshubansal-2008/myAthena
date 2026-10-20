@@ -1,10 +1,10 @@
 const express = require("express");
 const prisma = require("../prisma");
-const { authenticateToken } = require("../middleware/authMiddleware");
+const { authenticateToken, enforceCandidateIdentity } = require("../middleware/authMiddleware");
 
 const router = express.Router();
 
-router.get("/me", authenticateToken, async (req, res) => {
+router.get("/me", authenticateToken, enforceCandidateIdentity, async (req, res) => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user.userId },
