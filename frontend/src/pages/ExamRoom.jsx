@@ -19,6 +19,7 @@ import {
   XCircle,
   MinusCircle,
   FileCheck,
+  ShieldAlert,
 } from 'lucide-react';
 import './pages.css';
 
@@ -58,6 +59,8 @@ export default function ExamRoom() {
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [isTimeout, setIsTimeout] = useState(false);
   const [submissionResult, setSubmissionResult] = useState(null);
+  const [proctorWarning, setProctorWarning] = useState(null);
+  const lastLoggedIncidentRef = useRef({});
 
   // Persistent Answer Saving States: 'saved' | 'saving' | 'failed'
   const [saveStatus, setSaveStatus] = useState('saved');
@@ -441,27 +444,135 @@ export default function ExamRoom() {
     return () => clearInterval(interval);
   }, [deadlineTime, isSubmitted, loading, error, handleTimeoutSubmit, syncWithServerTimer]);
 
-  // Periodic background timer synchronization and resume-from-sleep detector
+  // Authoritative Proctoring Incident Logging Helper
+  const recordProctoringIncident = useCallback(
+    async (incidentType, description, extraMetadata = {}) => {
+      const currentAttemptId = attemptIdRef.current || attemptId;
+      if (!token || !examId || !currentAttemptId || isSubmittedRef.current) return;
+
+      const now = Date.now();
+      const lastTime = lastLoggedIncidentRef.current[incidentType] || 0;
+      // Client-side debounce of 2.5s to prevent duplicate listener firings
+      if (now - lastTime < 2500) {
+        return;
+      }
+      lastLoggedIncidentRef.current[incidentType] = now;
+
+      try {
+        await fetch(`${API_BASE_URL}/exams/${examId}/incident`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            attemptId: currentAttemptId,
+            type: incidentType,
+            description,
+            metadata: {
+              clientTimestamp: now,
+              isElectron: Boolean(window.electronAPI),
+              ...extraMetadata,
+            },
+          }),
+        });
+      } catch (err) {
+        console.warn('Proctoring incident log dispatch warning:', err);
+      }
+    },
+    [token, examId, attemptId]
+  );
+
+  // Proctoring Incident Monitoring: Window Blur & Fullscreen Exit
   useEffect(() => {
     if (isSubmitted || loading || error || !attemptId) return;
+
+    let cleanupElectronBlur = null;
+    let cleanupElectronFullscreen = null;
+
+    // Window Blur Handler
+    const onBlurDetected = () => {
+      if (isSubmittedRef.current) return;
+      recordProctoringIncident(
+        'WINDOW_BLUR',
+        'Candidate switched away from the examination window or application lost focus.'
+      );
+      setProctorWarning({
+        type: 'WINDOW_BLUR',
+        title: 'Focus Lost Warning',
+        message:
+          'Athena detected that you switched away from the examination window. This event has been recorded in your proctoring audit log.',
+      });
+    };
+
+    // Fullscreen Exit Handler
+    const onFullscreenExitDetected = () => {
+      if (isSubmittedRef.current) return;
+      recordProctoringIncident(
+        'FULLSCREEN_EXIT',
+        'Candidate exited fullscreen mode during active examination session.'
+      );
+      setProctorWarning({
+        type: 'FULLSCREEN_EXIT',
+        title: 'Fullscreen Exited Warning',
+        message:
+          'Athena requires an exclusive fullscreen window. Exiting fullscreen mode has been recorded in your proctoring audit log.',
+      });
+    };
+
+    // 1. Electron IPC listeners
+    if (window.electronAPI) {
+      if (typeof window.electronAPI.onWindowBlur === 'function') {
+        cleanupElectronBlur = window.electronAPI.onWindowBlur(onBlurDetected);
+      }
+      if (typeof window.electronAPI.onFullscreenChange === 'function') {
+        cleanupElectronFullscreen = window.electronAPI.onFullscreenChange((isFull) => {
+          if (!isFull) {
+            onFullscreenExitDetected();
+          }
+        });
+      }
+    }
+
+    // 2. DOM window, visibility, and fullscreen listeners
+    const handleDomBlur = () => {
+      onBlurDetected();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        onBlurDetected();
+      } else if (document.visibilityState === 'visible') {
+        syncWithServerTimer();
+      }
+    };
+
+    const handleDomFullscreenChange = () => {
+      const isFull = Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+      if (!isFull) {
+        onFullscreenExitDetected();
+      }
+    };
 
     const syncInterval = setInterval(() => {
       syncWithServerTimer();
     }, 30000);
 
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        syncWithServerTimer();
-      }
-    };
-
+    window.addEventListener('blur', handleDomBlur);
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    document.addEventListener('fullscreenchange', handleDomFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleDomFullscreenChange);
 
     return () => {
       clearInterval(syncInterval);
+      if (typeof cleanupElectronBlur === 'function') cleanupElectronBlur();
+      if (typeof cleanupElectronFullscreen === 'function') cleanupElectronFullscreen();
+      window.removeEventListener('blur', handleDomBlur);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      document.removeEventListener('fullscreenchange', handleDomFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleDomFullscreenChange);
     };
-  }, [isSubmitted, loading, error, attemptId, syncWithServerTimer]);
+  }, [isSubmitted, loading, error, attemptId, recordProctoringIncident, syncWithServerTimer]);
 
   const formatTime = (seconds) => {
     if (seconds === null || seconds === undefined) return '--:--';
@@ -1711,6 +1822,113 @@ export default function ExamRoom() {
                 className="btn btn-primary"
               >
                 <span>{isSubmitting ? 'Submitting Assessment...' : 'Confirm & Submit'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Proctoring Warning Modal */}
+      {proctorWarning && (
+        <div
+          id="proctor-warning-modal"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(5, 7, 10, 0.85)',
+            backdropFilter: 'blur(8px)',
+            zIndex: 100000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px',
+          }}
+        >
+          <div
+            style={{
+              background: '#131822',
+              border: '1px solid rgba(239, 68, 68, 0.4)',
+              borderRadius: '16px',
+              padding: '32px',
+              maxWidth: '520px',
+              width: '100%',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 30px rgba(239, 68, 68, 0.15)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '20px' }}>
+              <div
+                style={{
+                  width: '48px',
+                  height: '48px',
+                  borderRadius: '12px',
+                  background: 'rgba(239, 68, 68, 0.12)',
+                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#ef4444',
+                  flexShrink: 0,
+                }}
+              >
+                <ShieldAlert size={28} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#f8fafc', margin: 0 }}>
+                  {proctorWarning.title}
+                </h3>
+                <span
+                  style={{
+                    fontSize: '11px',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    fontWeight: 600,
+                    color: '#ef4444',
+                  }}
+                >
+                  Proctoring Event Recorded
+                </span>
+              </div>
+            </div>
+
+            <p style={{ fontSize: '13px', color: '#94a3b8', lineHeight: 1.6, marginBottom: '24px' }}>
+              {proctorWarning.message}
+            </p>
+
+            <div
+              style={{
+                background: 'rgba(239, 68, 68, 0.06)',
+                border: '1px solid rgba(239, 68, 68, 0.15)',
+                borderRadius: '8px',
+                padding: '12px 16px',
+                marginBottom: '24px',
+                fontSize: '12px',
+                color: '#cbd5e1',
+              }}
+            >
+              Please remain in the exam window and stay in fullscreen mode until your test is concluded. All focus interruptions are timestamped in the proctoring audit log.
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+              <button
+                id="btn-dismiss-proctor-warning"
+                onClick={() => {
+                  if (proctorWarning.type === 'FULLSCREEN_EXIT') {
+                    if (window.electronAPI && typeof window.electronAPI.setFullscreen === 'function') {
+                      window.electronAPI.setFullscreen(true);
+                    } else if (document.documentElement.requestFullscreen) {
+                      document.documentElement.requestFullscreen().catch(() => {});
+                    }
+                  }
+                  setProctorWarning(null);
+                }}
+                className="btn btn-primary"
+                style={{
+                  background: '#ef4444',
+                  borderColor: '#ef4444',
+                  color: '#ffffff',
+                }}
+              >
+                <span>Acknowledge & Return to Exam</span>
               </button>
             </div>
           </div>

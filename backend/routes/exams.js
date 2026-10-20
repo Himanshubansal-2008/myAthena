@@ -1066,6 +1066,205 @@ router.post("/:id/answer", authenticateToken, async (req, res) => {
 });
 
 /**
+ * POST /api/exams/:id/incident
+ * Persist an authoritative, timestamped proctoring incident log in PostgreSQL
+ */
+router.post("/:id/incident", authenticateToken, async (req, res) => {
+  try {
+    const examId = req.params.id;
+    const userId = req.user.userId;
+    const { attemptId, type, description, details, metadata } = req.body;
+
+    // 1. Resolve attempt session
+    let targetAttempt;
+    if (attemptId) {
+      const specifiedAttempt = await prisma.attempt.findUnique({
+        where: { id: attemptId },
+      });
+      if (!specifiedAttempt) {
+        return res.status(404).json({
+          message: "Examination attempt not found.",
+          code: "ATTEMPT_NOT_FOUND",
+        });
+      }
+      if (specifiedAttempt.userId !== userId) {
+        return res.status(403).json({
+          message: "Unauthorized: You do not own this examination session.",
+          code: "FORBIDDEN",
+        });
+      }
+      if (specifiedAttempt.examId !== examId) {
+        return res.status(400).json({
+          message: "Examination attempt does not belong to the specified exam.",
+          code: "INVALID_EXAM_SESSION",
+        });
+      }
+      targetAttempt = specifiedAttempt;
+    } else {
+      const activeAttempts = await prisma.attempt.findMany({
+        where: { userId, examId, status: "IN_PROGRESS" },
+        orderBy: { startedAt: "desc" },
+      });
+      targetAttempt = activeAttempts[0];
+    }
+
+    if (!targetAttempt) {
+      return res.status(404).json({
+        message: "No active examination attempt found to log incident.",
+        code: "ATTEMPT_NOT_FOUND",
+      });
+    }
+
+    // 2. Reject incidents on submitted sessions
+    if (targetAttempt.status === "SUBMITTED" || targetAttempt.status === "AUTO_SUBMITTED") {
+      return res.status(403).json({
+        message: "Incidents cannot be recorded for a completed examination session.",
+        code: "ALREADY_SUBMITTED",
+      });
+    }
+
+    if (targetAttempt.status !== "IN_PROGRESS") {
+      return res.status(403).json({
+        message: "Examination session is not active.",
+        code: "INVALID_SESSION_STATUS",
+      });
+    }
+
+    // 3. Reject incidents on expired sessions
+    if (targetAttempt.deadlineAt && new Date() > new Date(targetAttempt.deadlineAt)) {
+      try {
+        await autoSubmitAttempt(targetAttempt.id);
+      } catch (e) {
+        console.error("Auto-submit on incident expiry error:", e);
+      }
+      return res.status(403).json({
+        message: "Assessment time has elapsed. Incidents can no longer be recorded.",
+        code: "EXAM_TIMEOUT",
+      });
+    }
+
+    // 4. Validate and normalize incident type
+    const validTypes = new Set([
+      "WINDOW_BLUR",
+      "FULLSCREEN_EXIT",
+      "CAMERA_STOPPED",
+      "MICROPHONE_STOPPED",
+      "SCREEN_SHARING_STOPPED",
+      "OTHER",
+    ]);
+
+    let validatedType = String(type || "").trim().toUpperCase();
+    if (!validTypes.has(validatedType)) {
+      if (
+        validatedType === "BLUR" ||
+        validatedType === "TAB_SWITCH" ||
+        validatedType === "VISIBILITY_HIDDEN" ||
+        validatedType === "WINDOW_FOCUS_LOST"
+      ) {
+        validatedType = "WINDOW_BLUR";
+      } else if (
+        validatedType === "FULLSCREEN_LEAVE" ||
+        validatedType === "FULLSCREEN" ||
+        validatedType === "EXIT_FULLSCREEN"
+      ) {
+        validatedType = "FULLSCREEN_EXIT";
+      } else {
+        validatedType = "OTHER";
+      }
+    }
+
+    // 5. Server-side deduplication within 2 seconds for identical event on same attempt
+    const recentDuplicate = await prisma.proctoringIncident.findFirst({
+      where: {
+        attemptId: targetAttempt.id,
+        type: validatedType,
+        occurredAt: { gte: new Date(Date.now() - 2000) },
+      },
+      orderBy: { occurredAt: "desc" },
+    });
+
+    if (recentDuplicate) {
+      return res.json({
+        ok: true,
+        deduplicated: true,
+        incident: recentDuplicate,
+      });
+    }
+
+    // 6. Persist authoritative timestamped incident
+    const serverTimestamp = new Date();
+    const eventDescription = description || details || null;
+    const incident = await prisma.proctoringIncident.create({
+      data: {
+        attemptId: targetAttempt.id,
+        type: validatedType,
+        description: eventDescription ? String(eventDescription).slice(0, 500) : null,
+        metadata: metadata && typeof metadata === "object" ? metadata : null,
+        occurredAt: serverTimestamp,
+      },
+    });
+
+    res.status(201).json({
+      ok: true,
+      incident,
+    });
+  } catch (error) {
+    console.error("Record proctoring incident error:", error);
+    res.status(500).json({ message: "Failed to persist proctoring incident log." });
+  }
+});
+
+/**
+ * GET /api/exams/:id/incidents
+ * Retrieve authoritative timestamped proctoring incident logs for an attempt
+ */
+router.get("/:id/incidents", authenticateToken, async (req, res) => {
+  try {
+    const examId = req.params.id;
+    const userId = req.user.userId;
+    const { attemptId } = req.query;
+
+    let targetAttempt;
+    if (attemptId) {
+      const specifiedAttempt = await prisma.attempt.findUnique({
+        where: { id: attemptId },
+      });
+      if (!specifiedAttempt) {
+        return res.status(404).json({ message: "Examination attempt not found." });
+      }
+      if (specifiedAttempt.userId !== userId) {
+        return res.status(403).json({ message: "Unauthorized: You do not own this examination session." });
+      }
+      targetAttempt = specifiedAttempt;
+    } else {
+      const attempts = await prisma.attempt.findMany({
+        where: { userId, examId },
+        orderBy: { startedAt: "desc" },
+      });
+      targetAttempt = attempts[0];
+    }
+
+    if (!targetAttempt) {
+      return res.json({ incidents: [], count: 0 });
+    }
+
+    const incidents = await prisma.proctoringIncident.findMany({
+      where: { attemptId: targetAttempt.id },
+      orderBy: { occurredAt: "asc" },
+    });
+
+    res.json({
+      attemptId: targetAttempt.id,
+      incidents,
+      count: incidents.length,
+    });
+  } catch (error) {
+    console.error("Retrieve proctoring incidents error:", error);
+    res.status(500).json({ message: "Failed to retrieve proctoring incident logs." });
+  }
+});
+
+/**
  * POST /api/exams/:id/submit
  * Conclude assessment, grade answers, and persist result in PostgreSQL
  */

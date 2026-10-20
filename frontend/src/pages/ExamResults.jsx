@@ -3,6 +3,8 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context.jsx';
 import {
   Shield,
+  ShieldCheck,
+  ShieldAlert,
   CheckCircle2,
   XCircle,
   MinusCircle,
@@ -922,6 +924,143 @@ export default function ExamResults() {
             </div>
           </div>
         )}
+
+        {/* PROCTORING AUDIT LOG SECTION */}
+        <div
+          id="proctoring-audit-section"
+          style={{
+            background: 'var(--bg-card)',
+            border: '1px solid var(--border-default)',
+            borderRadius: 'var(--radius-md)',
+            padding: '24px 28px',
+            marginTop: '28px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <div
+                style={{
+                  width: '36px',
+                  height: '36px',
+                  borderRadius: '8px',
+                  background: (resultData.incidents && resultData.incidents.length > 0) ? 'rgba(239, 68, 68, 0.1)' : 'rgba(34, 197, 94, 0.1)',
+                  border: (resultData.incidents && resultData.incidents.length > 0) ? '1px solid rgba(239, 68, 68, 0.25)' : '1px solid rgba(34, 197, 94, 0.25)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: (resultData.incidents && resultData.incidents.length > 0) ? '#ef4444' : '#22c55e',
+                }}
+              >
+                {(resultData.incidents && resultData.incidents.length > 0) ? <ShieldAlert size={20} /> : <ShieldCheck size={20} />}
+              </div>
+              <div>
+                <h3 style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                  Proctoring Incident Audit Trail
+                </h3>
+                <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                  Server-timestamped log of window focus and screen mode events
+                </span>
+              </div>
+            </div>
+
+            <span
+              style={{
+                fontSize: '12px',
+                fontWeight: 600,
+                padding: '4px 10px',
+                borderRadius: '9999px',
+                background: (resultData.incidents && resultData.incidents.length > 0) ? 'rgba(239, 68, 68, 0.12)' : 'rgba(34, 197, 94, 0.12)',
+                color: (resultData.incidents && resultData.incidents.length > 0) ? '#f87171' : '#4ade80',
+                border: (resultData.incidents && resultData.incidents.length > 0) ? '1px solid rgba(239, 68, 68, 0.2)' : '1px solid rgba(34, 197, 94, 0.2)',
+              }}
+            >
+              {(resultData.incidents && resultData.incidents.length > 0)
+                ? `${resultData.incidents.length} Incident${resultData.incidents.length === 1 ? '' : 's'} Recorded`
+                : 'Clean Session · No Incidents Recorded'}
+            </span>
+          </div>
+
+          {resultData.incidents && resultData.incidents.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {resultData.incidents.map((incident, idx) => {
+                const eventTime = new Date(incident.occurredAt);
+                const formattedTime = !isNaN(eventTime.getTime())
+                  ? eventTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                  : 'Time unavailable';
+                const formattedDate = !isNaN(eventTime.getTime())
+                  ? eventTime.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+                  : '';
+
+                const incidentLabel =
+                  incident.type === 'WINDOW_BLUR'
+                    ? 'Window Blur / Tab Switch'
+                    : incident.type === 'FULLSCREEN_EXIT'
+                    ? 'Exited Fullscreen Mode'
+                    : incident.type.replace(/_/g, ' ');
+
+                return (
+                  <div
+                    key={incident.id || idx}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      justifyContent: 'space-between',
+                      background: 'rgba(15, 23, 42, 0.4)',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: 'var(--radius-sm)',
+                      padding: '12px 16px',
+                      gap: '12px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                      <AlertTriangle size={16} color="#f87171" style={{ marginTop: '2px', flexShrink: 0 }} />
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
+                          <span style={{ fontSize: '13px', fontWeight: 600, color: '#f8fafc' }}>
+                            {incidentLabel}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: '10px',
+                              fontFamily: 'var(--font-mono)',
+                              textTransform: 'uppercase',
+                              padding: '1px 6px',
+                              borderRadius: '4px',
+                              background: 'rgba(239, 68, 68, 0.15)',
+                              color: '#fca5a5',
+                            }}
+                          >
+                            {incident.type}
+                          </span>
+                        </div>
+                        {(incident.description || incident.details) && (
+                          <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                            {incident.description || incident.details}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                      <div style={{ fontSize: '12px', fontFamily: 'var(--font-mono)', color: 'var(--text-primary)', fontWeight: 600 }}>
+                        {formattedTime}
+                      </div>
+                      {formattedDate && (
+                        <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                          {formattedDate}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
+              The candidate maintained continuous exam window focus and exclusive fullscreen mode throughout this assessment session.
+            </p>
+          )}
+        </div>
 
         {/* BOTTOM RETURN ACTIONS */}
         <div style={{ display: 'flex', justifyContent: 'center', gap: '14px', marginTop: '32px' }}>
