@@ -364,6 +364,9 @@ router.get("/", authenticateToken, async (req, res) => {
         totalMarks: true,
         negativeMarking: true,
         status: true,
+        instructions: true,
+        startTime: true,
+        endTime: true,
         _count: {
           select: { questions: true },
         },
@@ -397,13 +400,26 @@ router.get("/", authenticateToken, async (req, res) => {
       }, {});
     }
 
+    const now = new Date();
     const payload = exams.map((exam) => {
       const userAttempt = attemptsByUser[exam.id];
       const isSubmitted = userAttempt?.status === "SUBMITTED" || userAttempt?.status === "AUTO_SUBMITTED";
       const isInProgress = userAttempt?.status === "IN_PROGRESS";
 
+      const hasStartTime = Boolean(exam.startTime);
+      const isFuture = hasStartTime && new Date(exam.startTime) > now;
+      const startsInSeconds = isFuture
+        ? Math.max(0, Math.floor((new Date(exam.startTime).getTime() - now.getTime()) / 1000))
+        : 0;
+      const isAvailable = (!hasStartTime || new Date(exam.startTime) <= now) &&
+                          (!exam.endTime || new Date(exam.endTime) >= now);
+
       return {
         ...exam,
+        isFuture,
+        startsInSeconds,
+        isAvailable,
+        serverTime: now.toISOString(),
         attempt: userAttempt
           ? {
               id: userAttempt.id,
@@ -416,11 +432,11 @@ router.get("/", authenticateToken, async (req, res) => {
               result: userAttempt.result,
             }
           : null,
-        canAttempt: !isSubmitted,
+        canAttempt: !isSubmitted && !isFuture && isAvailable,
       };
     });
 
-    res.json({ exams: payload });
+    res.json({ exams: payload, serverTime: now.toISOString() });
   } catch (error) {
     console.error("List exams error:", error);
     res.status(500).json({ message: "Unable to retrieve examinations." });
@@ -619,6 +635,36 @@ router.get("/:id", authenticateToken, async (req, res) => {
       return res.status(403).json({
         message: "This examination is not published or currently accessible.",
         code: "EXAM_NOT_AVAILABLE",
+      });
+    }
+
+    // Verify scheduled start time
+    if (exam.startTime && new Date(exam.startTime) > new Date() && req.user.role !== "ADMIN") {
+      const now = new Date();
+      const startsInSeconds = Math.max(0, Math.floor((new Date(exam.startTime).getTime() - now.getTime()) / 1000));
+      if (req.query.checkOnly === "true") {
+        return res.json({
+          canAttempt: false,
+          isFuture: true,
+          startTime: exam.startTime,
+          startsInSeconds,
+          serverTime: now.toISOString(),
+          message: "This examination is scheduled for the future and has not unlocked yet.",
+        });
+      }
+      return res.status(403).json({
+        message: "This examination is scheduled for the future and has not started yet.",
+        code: "EXAM_NOT_STARTED_YET",
+        startTime: exam.startTime,
+        startsInSeconds,
+        serverTime: now.toISOString(),
+        exam: {
+          id: exam.id,
+          title: exam.title,
+          description: exam.description,
+          durationMinutes: exam.durationMinutes,
+          totalMarks: exam.totalMarks,
+        },
       });
     }
 
@@ -1585,6 +1631,50 @@ router.post("/:id/submit", authenticateToken, async (req, res) => {
     }
     console.error("Submit exam error:", error);
     res.status(500).json({ message: "Failed to submit and grade examination." });
+  }
+});
+
+/**
+ * POST /api/exams/:id/schedule
+ * Set or adjust scheduled start time for an exam (supports secondsFromNow or startTime ISO)
+ */
+router.post("/:id/schedule", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { secondsFromNow, startTime, durationMinutes } = req.body;
+
+    let targetStartTime = null;
+    if (typeof secondsFromNow === "number") {
+      targetStartTime = new Date(Date.now() + secondsFromNow * 1000);
+    } else if (startTime) {
+      targetStartTime = new Date(startTime);
+    }
+
+    const updated = await prisma.exam.update({
+      where: { id },
+      data: {
+        startTime: targetStartTime,
+        status: "PUBLISHED",
+        ...(durationMinutes ? { durationMinutes: Number(durationMinutes) } : {}),
+      },
+    });
+
+    const now = new Date();
+    const startsInSeconds = targetStartTime
+      ? Math.max(0, Math.floor((targetStartTime.getTime() - now.getTime()) / 1000))
+      : 0;
+
+    res.json({
+      message: "Exam schedule successfully updated.",
+      examId: updated.id,
+      title: updated.title,
+      startTime: updated.startTime,
+      startsInSeconds,
+      serverTime: now.toISOString(),
+    });
+  } catch (error) {
+    console.error("Schedule exam error:", error);
+    res.status(500).json({ message: "Failed to update exam schedule." });
   }
 });
 

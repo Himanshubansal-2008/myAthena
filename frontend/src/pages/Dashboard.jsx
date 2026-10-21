@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '../context.jsx';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
@@ -14,8 +14,106 @@ import {
   RotateCcw,
   FileCheck,
   AlertTriangle,
+  Timer,
+  Sparkles,
+  Calendar,
+  Check,
 } from 'lucide-react';
 import './pages.css';
+
+const FALLBACK_EXAMS = [
+  {
+    id: 'cs-401',
+    code: 'CS-401',
+    title: 'Advanced Computer Networks & Distributed Systems',
+    department: 'Department of Computer Science & Engineering',
+    type: 'End-Term Comprehensive Exam',
+    durationMinutes: 90,
+    totalQuestions: 4,
+    totalMarks: 100,
+    negativeMarking: '0.50 penalty per wrong answer',
+    status: 'AVAILABLE_NOW',
+    windowTime: 'Available today until 11:59 PM',
+  },
+  {
+    id: 'cs-302',
+    code: 'CS-302',
+    title: 'Design & Analysis of Algorithms',
+    department: 'Department of Computer Science & Engineering',
+    type: 'Mid-Term Assessment',
+    durationMinutes: 120,
+    totalQuestions: 4,
+    totalMarks: 100,
+    negativeMarking: 'No negative marking',
+    status: 'AVAILABLE_NOW',
+    windowTime: 'Available today until 11:59 PM',
+  },
+  {
+    id: 'se-204',
+    code: 'SE-204',
+    title: 'Operating Systems & Concurrency Architecture',
+    department: 'Software Engineering Division',
+    type: 'Module Assessment 2',
+    durationMinutes: 75,
+    totalQuestions: 4,
+    totalMarks: 75,
+    negativeMarking: '0.33 penalty per wrong answer',
+    status: 'AVAILABLE_NOW',
+    windowTime: 'Available today until 11:59 PM',
+  },
+  {
+    id: 'cs-501',
+    code: 'CS-501',
+    title: 'Artificial Intelligence & Neural Architectures',
+    department: 'Department of AI & Data Science',
+    type: 'End-Term Evaluation',
+    durationMinutes: 60,
+    totalQuestions: 4,
+    totalMarks: 100,
+    negativeMarking: '0.25 penalty per wrong answer',
+    status: 'AVAILABLE_NOW',
+    windowTime: 'Available today until 11:59 PM',
+  },
+  {
+    id: 'cy-301',
+    code: 'CY-301',
+    title: 'Applied Cryptography & Cyber Defense',
+    department: 'Information Security & Cyber Defense Division',
+    type: 'Professional Assessment',
+    durationMinutes: 90,
+    totalQuestions: 4,
+    totalMarks: 100,
+    negativeMarking: '0.25 penalty per wrong answer',
+    status: 'AVAILABLE_NOW',
+    windowTime: 'Available today until 11:59 PM',
+  },
+  {
+    id: 'db-303',
+    code: 'DB-303',
+    title: 'Advanced Database Internals & Query Optimization',
+    department: 'Database Systems & Storage Engine Laboratory',
+    type: 'Mid-Semester Exam',
+    durationMinutes: 60,
+    totalQuestions: 4,
+    totalMarks: 100,
+    negativeMarking: 'No negative marking',
+    status: 'UPCOMING',
+    windowTime: 'Scheduled for tomorrow, 2:00 PM IST',
+  },
+  {
+    id: 'ds-202',
+    code: 'DS-202',
+    title: 'Data Structures & Algorithmic Problem Solving',
+    department: 'Department of Computer Science',
+    type: 'Scheduled Assessment',
+    durationMinutes: 90,
+    totalQuestions: 4,
+    totalMarks: 100,
+    negativeMarking: '0.25 penalty per wrong answer',
+    status: 'UPCOMING',
+    windowTime: 'Scheduled in 15 days • 10:00 AM IST',
+  },
+];
 
 export default function Dashboard() {
   const { user, token, logout } = useAuth();
@@ -29,11 +127,23 @@ export default function Dashboard() {
   const [loadingResults, setLoadingResults] = useState(false);
   const [resultsError, setResultsError] = useState(null);
 
+  // Real-time live clock state
+  const [now, setNow] = useState(Date.now());
+  const [actionMessage, setActionMessage] = useState(null);
+
   useEffect(() => {
     if (location.state?.tab) {
       setActiveTab(location.state.tab);
     }
   }, [location.state?.tab]);
+
+  // Live 1-second interval ticker for authoritative real-time countdowns
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const fetchExamsAndResults = useCallback(async () => {
     if (!token) return;
@@ -86,7 +196,7 @@ export default function Dashboard() {
   const handleResumeExam = (examId) => {
     const targetExam =
       backendExams.find((e) => (e.id || '').toLowerCase() === (examId || '').toLowerCase()) ||
-      examinations.find((e) => (e.id || '').toLowerCase() === (examId || '').toLowerCase()) ||
+      FALLBACK_EXAMS.find((e) => (e.id || '').toLowerCase() === (examId || '').toLowerCase()) ||
       { id: examId };
 
     navigate(`/exam/${examId}`, { state: { exam: targetExam, resume: true } });
@@ -97,47 +207,52 @@ export default function Dashboard() {
     navigate('/login');
   };
 
-  const examinations = [
-    {
-      id: 'cs-401',
-      code: 'CS-401',
-      title: 'Advanced Computer Networks & Distributed Systems',
-      department: 'Department of Computer Science & Engineering',
-      type: 'End-Term Comprehensive Exam',
-      durationMinutes: 90,
-      totalQuestions: 50,
-      totalMarks: 100,
-      negativeMarking: '0.25 penalty per wrong answer',
-      status: 'AVAILABLE_NOW',
-      windowTime: 'Available today until 11:59 PM',
-    },
-    {
-      id: 'cs-302',
-      code: 'CS-302',
-      title: 'Design & Analysis of Algorithms',
-      department: 'Department of Computer Science & Engineering',
-      type: 'Mid-Term Assessment',
-      durationMinutes: 120,
-      totalQuestions: 40,
-      totalMarks: 100,
-      negativeMarking: 'No negative marking',
-      status: 'AVAILABLE_NOW',
-      windowTime: 'Available today until 11:59 PM',
-    },
-    {
-      id: 'se-204',
-      code: 'SE-204',
-      title: 'Operating Systems & Concurrency Architecture',
-      department: 'Software Engineering Division',
-      type: 'Module Assessment 2',
-      durationMinutes: 75,
-      totalQuestions: 35,
-      totalMarks: 75,
-      negativeMarking: '0.33 penalty per wrong answer',
-      status: 'UPCOMING',
-      windowTime: 'Scheduled for tomorrow, 10:00 AM IST',
-    },
-  ];
+  // Merge backend exams with rich fallback metadata
+  const examinations = useMemo(() => {
+    if (!backendExams || backendExams.length === 0) {
+      return FALLBACK_EXAMS;
+    }
+
+    const merged = backendExams.map((be) => {
+      const fallback = FALLBACK_EXAMS.find((f) => f.id.toLowerCase() === (be.id || '').toLowerCase());
+      const code = (be.id || '').toUpperCase();
+      const descParts = (be.description || '').split(' - ');
+      const department = fallback?.department || descParts[0] || 'Department of Computer Science';
+      const type = fallback?.type || descParts[1] || 'Academic Examination';
+      const totalQuestions = be._count?.questions ?? (fallback?.totalQuestions || 4);
+      const negativeMarking = be.negativeMarking > 0
+        ? `${be.negativeMarking} penalty per wrong answer`
+        : 'No negative marking';
+
+      return {
+        id: be.id,
+        code,
+        title: be.title,
+        department,
+        type,
+        durationMinutes: be.durationMinutes || fallback?.durationMinutes || 90,
+        totalQuestions,
+        totalMarks: be.totalMarks || fallback?.totalMarks || 100,
+        negativeMarking,
+        startTime: be.startTime,
+        endTime: be.endTime,
+        instructions: be.instructions,
+        status: be.status,
+        windowTime: be.startTime
+          ? `Scheduled for ${new Date(be.startTime).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })} at ${new Date(be.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+          : (fallback?.windowTime || 'Available today until 11:59 PM'),
+      };
+    });
+
+    // Also include any fallback presets if not yet registered in backend
+    FALLBACK_EXAMS.forEach((fe) => {
+      if (!merged.some((m) => m.id.toLowerCase() === fe.id.toLowerCase())) {
+        merged.push(fe);
+      }
+    });
+
+    return merged;
+  }, [backendExams]);
 
   // Helper: check if an exam has been completed / submitted by current user
   const isCompletedExam = useCallback(
@@ -169,6 +284,43 @@ export default function Dashboard() {
   );
 
   const upcomingExams = examinations.filter((exam) => !isCompletedExam(exam));
+
+  // Track which exams were previously in the future
+  const previouslyFutureExamsRef = useRef(new Set());
+
+  // Automatic Start Detection: When a future exam reaches start time, unlock it in real-time
+  useEffect(() => {
+    upcomingExams.forEach((exam) => {
+      if (exam.startTime) {
+        const startTimeMs = new Date(exam.startTime).getTime();
+        const secondsRemaining = Math.max(0, Math.floor((startTimeMs - now) / 1000));
+
+        if (secondsRemaining > 0) {
+          previouslyFutureExamsRef.current.add(exam.id);
+        } else if (previouslyFutureExamsRef.current.has(exam.id)) {
+          // It just reached 0 while candidate was on the dashboard!
+          previouslyFutureExamsRef.current.delete(exam.id);
+          setActionMessage(`🔔 ${exam.code}: "${exam.title}" is now LIVE and unlocked! You may enter when ready.`);
+          setTimeout(() => setActionMessage(null), 8000);
+        }
+      }
+    });
+  }, [now, upcomingExams]);
+
+  const formatCountdown = (totalSeconds) => {
+    if (totalSeconds <= 0) return '00:00';
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (days > 0) {
+      return `${days}d ${String(hours).padStart(2, '0')}h ${String(minutes).padStart(2, '0')}m`;
+    }
+    if (hours > 0) {
+      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    }
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  };
 
   return (
     <div className="dashboard-root">
@@ -323,7 +475,11 @@ export default function Dashboard() {
               ) : (
                 <div className="exam-card-list">
                   {upcomingExams.map((exam) => {
-                    const isLive = exam.status === 'AVAILABLE_NOW';
+                    const startTimeMs = exam.startTime ? new Date(exam.startTime).getTime() : null;
+                    const isFutureScheduled = Boolean(startTimeMs && (startTimeMs - now) > 0);
+                    const secondsLeft = isFutureScheduled ? Math.max(0, Math.floor((startTimeMs - now) / 1000)) : 0;
+                    const isLive = !isFutureScheduled;
+
                     const isResumable =
                       (activeSession && (activeSession.examId || '').toLowerCase() === (exam.id || '').toLowerCase()) ||
                       (() => {
@@ -332,7 +488,10 @@ export default function Dashboard() {
                       })();
 
                     return (
-                      <div key={exam.id} className="surface-card exam-item-card">
+                      <div
+                        key={exam.id}
+                        className={`surface-card exam-item-card ${isFutureScheduled ? 'exam-future-card' : ''}`}
+                      >
                         <div className="exam-top-info">
                           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                             <span className="font-mono exam-code-tag">
@@ -347,6 +506,13 @@ export default function Dashboard() {
                             <div className="status-pill status-amber">
                               <span className="status-dot status-dot-amber"></span>
                               In Progress • Resume Available
+                            </div>
+                          ) : isFutureScheduled ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <div className={`countdown-chip ${secondsLeft <= 30 ? 'countdown-imminent' : ''}`}>
+                                <Timer size={13} className={secondsLeft <= 30 ? 'pulse-amber' : ''} />
+                                <span>Starts in: <strong className="countdown-digits">{formatCountdown(secondsLeft)}</strong></span>
+                              </div>
                             </div>
                           ) : isLive ? (
                             <div className="status-pill status-emerald">
@@ -365,7 +531,9 @@ export default function Dashboard() {
                             {exam.title}
                           </h2>
                           <div className="exam-type-text">
-                            {exam.type} • {exam.windowTime}
+                            {exam.type} • {isFutureScheduled
+                              ? `Scheduled start on ${new Date(exam.startTime).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })} at ${new Date(exam.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                              : exam.windowTime}
                           </div>
                         </div>
 
@@ -394,36 +562,45 @@ export default function Dashboard() {
                             <span>Proctored Assessment • Fullscreen Desktop Mode Enforced</span>
                           </div>
 
-                          {isResumable ? (
-                            <button
-                              id={`btn-resume-exam-${exam.id}`}
-                              onClick={() => handleResumeExam(exam.id)}
-                              className="btn btn-warning"
-                              style={{ padding: '9px 18px', display: 'inline-flex', alignItems: 'center', gap: '8px' }}
-                            >
-                              <RotateCcw size={14} />
-                              <span>Resume Exam</span>
-                              <ArrowRight size={14} />
-                            </button>
-                          ) : isLive ? (
-                            <button
-                              id={`btn-start-exam-${exam.id}`}
-                              onClick={() => navigate('/instructions', { state: { exam } })}
-                              className="btn btn-primary"
-                              style={{ padding: '9px 18px' }}
-                            >
-                              <span>Review Rules & Enter Exam</span>
-                              <ArrowRight size={14} />
-                            </button>
-                          ) : (
-                            <button
-                              disabled
-                              className="btn btn-secondary btn-sm"
-                              style={{ opacity: 0.6 }}
-                            >
-                              <span>Upcoming Session</span>
-                            </button>
-                          )}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            {isResumable ? (
+                              <button
+                                id={`btn-resume-exam-${exam.id}`}
+                                onClick={() => handleResumeExam(exam.id)}
+                                className="btn btn-warning"
+                                style={{ padding: '9px 18px', display: 'inline-flex', alignItems: 'center', gap: '8px' }}
+                              >
+                                <RotateCcw size={14} />
+                                <span>Resume Exam</span>
+                                <ArrowRight size={14} />
+                              </button>
+                            ) : isLive ? (
+                              <button
+                                id={`btn-start-exam-${exam.id}`}
+                                onClick={() => navigate('/instructions', { state: { exam } })}
+                                className="btn btn-primary"
+                                style={{ padding: '9px 18px' }}
+                              >
+                                <span>Review Rules & Enter Exam</span>
+                                <ArrowRight size={14} />
+                              </button>
+                            ) : (
+                              <button
+                                disabled
+                                className="btn btn-secondary btn-sm"
+                                style={{
+                                  opacity: 0.7,
+                                  cursor: 'not-allowed',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '6px',
+                                }}
+                              >
+                                <Lock size={13} />
+                                <span>Locked • Unlocks in {formatCountdown(secondsLeft)}</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     );
@@ -557,12 +734,12 @@ export default function Dashboard() {
                   {pastResults.map((result) => {
                     const formattedDate = result.submittedAt
                       ? new Date(result.submittedAt).toLocaleDateString(undefined, {
-                          year: 'numeric',
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })
                       : 'Completed';
 
                     const hasIncidents = (result.incidentCount || 0) > 0;
@@ -718,6 +895,33 @@ export default function Dashboard() {
           <span>Secure Proctoring Protocol Active</span>
         </footer>
       </div>
+
+
+      {/* Action Notification Toast */}
+      {actionMessage && (
+        <div
+          style={{
+            position: 'fixed',
+            top: '20px',
+            right: '24px',
+            zIndex: 9999,
+            background: 'rgba(15, 23, 42, 0.95)',
+            border: '1px solid #10b981',
+            color: '#34d399',
+            padding: '10px 18px',
+            borderRadius: '8px',
+            fontSize: '13px',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            animation: 'slideInUp 0.2s ease-out',
+          }}
+        >
+          <Check size={16} />
+          <span>{actionMessage}</span>
+        </div>
+      )}
     </div>
   );
 }

@@ -47,6 +47,8 @@ export default function ExamRoom() {
   const [questions, setQuestions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [waitingRoomData, setWaitingRoomData] = useState(null);
+  const [waitingSecondsLeft, setWaitingSecondsLeft] = useState(null);
 
   // Navigation, Answer & Review Flag State
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
@@ -194,6 +196,18 @@ export default function ExamRoom() {
         if (isCancelled) return;
 
         if (!response.ok) {
+          if (data.code === 'EXAM_NOT_STARTED_YET') {
+            const secs = data.startsInSeconds || Math.max(0, Math.floor((new Date(data.startTime).getTime() - Date.now()) / 1000));
+            setWaitingRoomData({
+              startTime: data.startTime,
+              startsInSeconds: secs,
+              exam: data.exam || exam,
+            });
+            setWaitingSecondsLeft(secs);
+            setLoading(false);
+            return;
+          }
+
           if (data.code === 'ALREADY_SUBMITTED' && data.isTimeout) {
             if (cameraStreamRef.current) {
               cameraStreamRef.current.getTracks().forEach((t) => t.stop());
@@ -306,6 +320,28 @@ export default function ExamRoom() {
       isCancelled = true;
     };
   }, [examId, token]);
+
+  // Live ticker for Waiting Room countdown
+  useEffect(() => {
+    if (!waitingRoomData || waitingSecondsLeft === null) return;
+    if (waitingSecondsLeft <= 0) {
+      setWaitingRoomData(null);
+      window.location.reload();
+      return;
+    }
+    const timer = setInterval(() => {
+      setWaitingSecondsLeft((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          setWaitingRoomData(null);
+          window.location.reload();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [waitingRoomData, waitingSecondsLeft]);
 
   // Automatic Submission on Deadline Timeout
   const handleTimeoutSubmit = useCallback(async () => {
@@ -1061,6 +1097,87 @@ export default function ExamRoom() {
           <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
             Retrieving examination questions and initializing your authenticated candidate session...
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  // --- STATE 1.5: SCHEDULED WAITING ROOM (Future Exam) ---
+  if (waitingRoomData && waitingSecondsLeft !== null) {
+    const hours = Math.floor(waitingSecondsLeft / 3600);
+    const mins = Math.floor((waitingSecondsLeft % 3600) / 60);
+    const secs = waitingSecondsLeft % 60;
+    const formattedDigits =
+      hours > 0
+        ? `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+        : `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+
+    return (
+      <div className="exam-room-root" style={{ alignItems: 'center', justifyContent: 'center' }}>
+        <div className="waiting-room-hero">
+          <div
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '5px 14px',
+              borderRadius: '999px',
+              background: 'rgba(99, 102, 241, 0.12)',
+              border: '1px solid rgba(99, 102, 241, 0.35)',
+              color: '#a5b4fc',
+              fontSize: '12px',
+              fontWeight: 600,
+              marginBottom: '16px',
+            }}
+          >
+            <Clock size={14} className="pulse-amber" />
+            <span>EXAMINATION WAITING ROOM • PROCTORING TELEMETRY READY</span>
+          </div>
+
+          <h1 style={{ fontSize: '22px', fontWeight: 700, color: '#f8fafc', marginBottom: '8px' }}>
+            {waitingRoomData.exam?.title || 'Scheduled Assessment'}
+          </h1>
+          <p
+            style={{
+              fontSize: '13px',
+              color: 'var(--text-secondary)',
+              maxWidth: '520px',
+              margin: '0 auto',
+              lineHeight: 1.5,
+            }}
+          >
+            Your workstation and proctoring telemetry are verified. Please stay on this screen in fullscreen mode.
+            Your examination session will unlock and start automatically when the timer reaches zero.
+          </p>
+
+          <div className="waiting-room-timer-display">
+            <Clock size={28} color="#38bdf8" />
+            <div className="waiting-room-timer-digits">{formattedDigits}</div>
+          </div>
+
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '12px',
+              marginTop: '16px',
+            }}
+          >
+            <button
+              onClick={() => {
+                if (window.electronAPI && typeof window.electronAPI.setFullscreen === 'function') {
+                  window.electronAPI.setFullscreen(false).catch(() => {});
+                }
+                navigate('/dashboard');
+              }}
+              className="btn btn-secondary btn-sm"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+            >
+              <ArrowLeft size={14} />
+              <span>Return to Dashboard</span>
+            </button>
+          </div>
         </div>
       </div>
     );

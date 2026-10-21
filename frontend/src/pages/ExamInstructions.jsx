@@ -67,7 +67,7 @@ export default function ExamInstructions() {
   const location = useLocation();
   const { user, token } = useAuth();
 
-  const [acknowledged, setAcknowledged] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(Boolean(location.state?.autoStarted));
   const [alreadySubmitted, setAlreadySubmitted] = useState(false);
   const [isInProgress, setIsInProgress] = useState(false);
 
@@ -84,7 +84,28 @@ export default function ExamInstructions() {
     maxMarks: passedExam?.totalMarks || passedExam?.maxMarks || DEFAULT_EXAM_DATA.maxMarks,
     passingMarks: passedExam?.passingMarks || DEFAULT_EXAM_DATA.passingMarks,
     negativeMarking: passedExam?.negativeMarking || DEFAULT_EXAM_DATA.negativeMarking,
+    startTime: passedExam?.startTime || null,
   };
+
+  const [secondsUntilStart, setSecondsUntilStart] = useState(() => {
+    if (!exam?.startTime) return 0;
+    return Math.max(0, Math.floor((new Date(exam.startTime).getTime() - Date.now()) / 1000));
+  });
+
+  // Ticker for scheduled future exam in instructions
+  useEffect(() => {
+    if (secondsUntilStart <= 0) return;
+    const interval = setInterval(() => {
+      setSecondsUntilStart((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [secondsUntilStart]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -104,6 +125,9 @@ export default function ExamInstructions() {
             setAlreadySubmitted(true);
           } else if (res.ok && data.isInProgress) {
             setIsInProgress(true);
+          }
+          if (typeof data.startsInSeconds === 'number') {
+            setSecondsUntilStart(data.startsInSeconds);
           }
         }
       } catch (err) {
@@ -506,7 +530,11 @@ export default function ExamInstructions() {
               <span>Back to Dashboard</span>
             </button>
             <span className="actions-hint-text">
-              {acknowledged
+              {alreadySubmitted
+                ? 'This assessment has already been finalized.'
+                : secondsUntilStart > 0
+                ? `Assessment is scheduled for ${new Date(exam.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Button will unlock automatically.`
+                : acknowledged
                 ? 'Ready to proceed with hardware and environment readiness.'
                 : 'Select the acknowledgement checkbox above to enable continuation.'}
             </span>
@@ -515,18 +543,28 @@ export default function ExamInstructions() {
           <div className="actions-right">
             <button
               onClick={handleContinue}
-              disabled={!acknowledged || alreadySubmitted}
+              disabled={!acknowledged || alreadySubmitted || secondsUntilStart > 0}
               className="btn btn-primary instructions-continue-btn"
               title={
                 alreadySubmitted
                   ? 'Exam already completed'
+                  : secondsUntilStart > 0
+                  ? `Assessment unlocks in ${secondsUntilStart}s`
                   : acknowledged
                   ? 'Proceed to System Diagnostics'
                   : 'Please acknowledge the instructions first'
               }
-              aria-disabled={!acknowledged || alreadySubmitted}
+              aria-disabled={!acknowledged || alreadySubmitted || secondsUntilStart > 0}
             >
-              <span>{alreadySubmitted ? 'Attempt Already Completed' : isInProgress ? 'Proceed to Resume Exam' : 'Continue to System Check'}</span>
+              <span>
+                {alreadySubmitted
+                  ? 'Attempt Already Completed'
+                  : secondsUntilStart > 0
+                  ? `Unlocks in ${Math.floor(secondsUntilStart / 60)}m ${secondsUntilStart % 60}s`
+                  : isInProgress
+                  ? 'Proceed to Resume Exam'
+                  : 'Continue to System Check'}
+              </span>
               <ArrowRight size={16} />
             </button>
           </div>
