@@ -45,18 +45,32 @@ function createWindow() {
     }
   });
 
-  // Load local Vite dev server on configured port 5180
-  const devUrl = 'http://localhost:5180/';
-  mainWindow.loadURL(devUrl);
+  // Load local Vite dev server in development, or compiled static files in production
+  const isDev = Boolean(
+    process.env.ELECTRON_START_URL ||
+    (!app.isPackaged && process.env.NODE_ENV !== 'production')
+  );
 
-  mainWindow.webContents.on('did-fail-load', () => {
-    console.log(`Failed to load ${devUrl}, retrying in 1s...`);
-    setTimeout(() => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.loadURL(devUrl);
-      }
-    }, 1000);
-  });
+  if (isDev) {
+    const devUrl = process.env.ELECTRON_START_URL || 'http://localhost:5180/';
+    mainWindow.loadURL(devUrl);
+
+    mainWindow.webContents.on('did-fail-load', () => {
+      console.log(`Failed to load ${devUrl}, retrying in 1s...`);
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.loadURL(devUrl);
+        }
+      }, 1000);
+    });
+  } else {
+    const prodPath = path.join(__dirname, '../dist/index.html');
+    mainWindow.loadFile(prodPath);
+
+    mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+      console.error(`Failed to load production build from ${validatedURL || prodPath}: ${errorDescription} (${errorCode})`);
+    });
+  }
 
   mainWindow.on('closed', () => {
     mainWindow = null;
