@@ -5,15 +5,40 @@ const cors = require("cors");
 
 const app = express();
 
-// CORS configuration to allow local Vite frontend and Electron
+// Whitelist allowed origins: Electron desktop (file:// or null origin), local Vite frontend, and configurable environment origins
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+const isOriginAllowed = (origin) => {
+  // Allow requests with no origin (e.g. Electron file:// protocol, curl, mobile native apps, server-to-server)
+  if (!origin || origin === "null" || origin === "file://") {
+    return true;
+  }
+
+  // Allow localhost / loopback addresses on any port for local development & Electron
+  const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:[0-9]+)?$/.test(origin);
+  if (isLocalhost) {
+    return true;
+  }
+
+  // Allow explicitly configured origins (e.g. production domains or institutional portals)
+  if (allowedOrigins.includes(origin)) {
+    return true;
+  }
+
+  return false;
+};
+
+// CORS configuration restricting access to authorized origins
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (e.g. Electron file:// or curl) or localhost origins
-      if (!origin || origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
+      if (isOriginAllowed(origin)) {
         callback(null, true);
       } else {
-        callback(null, true);
+        callback(new Error("CORS policy does not allow access from the specified Origin."));
       }
     },
     credentials: true,
@@ -53,8 +78,24 @@ app.get("/", (req, res) => {
   res.send("Athena Examination API is running");
 });
 
+// Global error handler for CORS and general server errors
+app.use((err, req, res, next) => {
+  if (err.message && err.message.includes("CORS")) {
+    return res.status(403).json({
+      message: "Access forbidden: origin not allowed by CORS policy",
+      code: "CORS_FORBIDDEN",
+    });
+  }
+  console.error("Unhandled server error:", err);
+  res.status(500).json({ message: "Internal server error" });
+});
+
 const PORT = process.env.PORT || 5050;
 
-app.listen(PORT, async () => {
-  console.log(`Athena API running on http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, async () => {
+    console.log(`Athena API running on http://localhost:${PORT}`);
+  });
+}
+
+module.exports = app;

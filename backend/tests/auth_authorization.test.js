@@ -591,6 +591,79 @@ async function runTests() {
       assert.strictEqual(incRes.data.code, "EXAM_TIMEOUT");
     });
 
+    // --------------------------------------------------------------------------
+    // SECTION 6: CORS Origin Restrictions Tests
+    // --------------------------------------------------------------------------
+    console.log("\n--- Section 6: CORS Origin Restrictions Tests ---");
+
+    const mainApp = require("../index");
+    const mainServer = http.createServer(mainApp);
+    await new Promise((resolve) => mainServer.listen(0, resolve));
+    const mainPort = mainServer.address().port;
+    const mainBaseUrl = `http://127.0.0.1:${mainPort}`;
+
+    try {
+      await asyncTest("CORS: Requests with no origin (curl/electron file) are permitted (200)", async () => {
+        const res = await fetch(`${mainBaseUrl}/api/health`);
+        assert.strictEqual(res.status, 200);
+        const data = await res.json();
+        assert.strictEqual(data.status, "ok");
+      });
+
+      await asyncTest("CORS: Local Vite frontend origin http://localhost:5180 is allowed with credentials", async () => {
+        const res = await fetch(`${mainBaseUrl}/api/health`, {
+          headers: { Origin: "http://localhost:5180" },
+        });
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(res.headers.get("access-control-allow-origin"), "http://localhost:5180");
+        assert.strictEqual(res.headers.get("access-control-allow-credentials"), "true");
+      });
+
+      await asyncTest("CORS: Loopback origin http://127.0.0.1:5180 is allowed with credentials", async () => {
+        const res = await fetch(`${mainBaseUrl}/api/health`, {
+          headers: { Origin: "http://127.0.0.1:5180" },
+        });
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(res.headers.get("access-control-allow-origin"), "http://127.0.0.1:5180");
+      });
+
+      await asyncTest("CORS: Preflight OPTIONS request from localhost:5180 succeeds with 204", async () => {
+        const res = await fetch(`${mainBaseUrl}/api/health`, {
+          method: "OPTIONS",
+          headers: {
+            Origin: "http://localhost:5180",
+            "Access-Control-Request-Method": "GET",
+          },
+        });
+        assert.strictEqual(res.status, 204);
+        assert.strictEqual(res.headers.get("access-control-allow-origin"), "http://localhost:5180");
+      });
+
+      await asyncTest("CORS: Unauthorized external origin https://malicious-site.com is rejected (403)", async () => {
+        const res = await fetch(`${mainBaseUrl}/api/health`, {
+          headers: { Origin: "https://malicious-site.com" },
+        });
+        assert.strictEqual(res.status, 403);
+        assert.strictEqual(res.headers.get("access-control-allow-origin"), null);
+        const data = await res.json();
+        assert.strictEqual(data.code, "CORS_FORBIDDEN");
+      });
+
+      await asyncTest("CORS: Preflight OPTIONS from unauthorized external origin is rejected (403)", async () => {
+        const res = await fetch(`${mainBaseUrl}/api/health`, {
+          method: "OPTIONS",
+          headers: {
+            Origin: "https://malicious-site.com",
+            "Access-Control-Request-Method": "GET",
+          },
+        });
+        assert.strictEqual(res.status, 403);
+        assert.strictEqual(res.headers.get("access-control-allow-origin"), null);
+      });
+    } finally {
+      mainServer.close();
+    }
+
   } finally {
     server.close();
 
