@@ -1253,7 +1253,7 @@ export default function ExamRoom() {
             No Questions Available
           </h2>
           <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: '24px' }}>
-            This examination has not yet been loaded with assessment questions. Please contact your examination proctor or institutional administrator.
+            This examination has not yet been loaded with assessment questions. Please contact your examination proctor or coordinator.
           </p>
           <button onClick={() => navigate('/dashboard')} className="btn btn-primary" style={{ margin: '0 auto' }}>
             <ArrowLeft size={15} />

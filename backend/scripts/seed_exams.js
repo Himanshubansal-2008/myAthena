@@ -3,22 +3,16 @@ const prisma = require("../prisma");
 async function seedExams() {
   console.log("Seeding Athena exams with questions and future scheduling...");
 
-  // Ensure an admin or creator user exists
-  let creator = await prisma.user.findFirst({
-    where: { role: "ADMIN" },
-  });
-
-  if (!creator) {
-    creator = await prisma.user.findFirst();
-  }
+  // Ensure an author/creator user exists
+  let creator = await prisma.user.findFirst();
 
   if (!creator) {
     creator = await prisma.user.create({
       data: {
-        name: "Athena Academic Administrator",
-        email: "admin@athena.local",
-        passwordHash: "$2a$08$K8...dummyhash",
-        role: "ADMIN",
+        name: "Athena Academic System",
+        email: "system@athena.local",
+        passwordHash: "$2a$08$K88jY6YJ6.q/nQzU8e6F0u8u0uK88jY6YJ6.q/nQzU8e6F0u8u0u",
+        role: "STUDENT",
       },
     });
   }

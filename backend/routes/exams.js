@@ -1,6 +1,6 @@
 const express = require("express");
 const prisma = require("../prisma");
-const { authenticateToken, allowRoles, enforceCandidateIdentity } = require("../middleware/authMiddleware");
+const { authenticateToken, enforceCandidateIdentity } = require("../middleware/authMiddleware");
 const { evaluateAnswer, calculateGrading } = require("../utils/grading");
 
 const router = express.Router();
@@ -205,7 +205,7 @@ router.get("/results/:attemptId", authenticateToken, async (req, res) => {
       },
     });
 
-    if (!attempt || (attempt.userId !== userId && req.user.role !== "ADMIN")) {
+    if (!attempt || attempt.userId !== userId) {
       return res.status(404).json({ message: "Result not found or unauthorized access." });
     }
 
@@ -353,9 +353,8 @@ router.get("/results/:attemptId", authenticateToken, async (req, res) => {
  */
 router.get("/", authenticateToken, async (req, res) => {
   try {
-    const isStudent = req.user.role !== "ADMIN";
     const exams = await prisma.exam.findMany({
-      where: isStudent ? { status: "PUBLISHED" } : {},
+      where: { status: "PUBLISHED" },
       select: {
         id: true,
         title: true,
@@ -560,7 +559,7 @@ router.get("/session/:attemptId", authenticateToken, async (req, res) => {
     }
 
     // Security check: Candidate can only access their own session
-    if (attempt.userId !== userId && req.user.role !== "ADMIN") {
+    if (attempt.userId !== userId) {
       return res.status(403).json({
         message: "Unauthorized: You do not own this examination session.",
         code: "FORBIDDEN",
@@ -631,7 +630,7 @@ router.get("/:id", authenticateToken, async (req, res) => {
     }
 
     // Verify candidate authorization to access exam
-    if (exam.status !== "PUBLISHED" && req.user.role !== "ADMIN") {
+    if (exam.status !== "PUBLISHED") {
       return res.status(403).json({
         message: "This examination is not published or currently accessible.",
         code: "EXAM_NOT_AVAILABLE",
@@ -639,7 +638,7 @@ router.get("/:id", authenticateToken, async (req, res) => {
     }
 
     // Verify scheduled start time
-    if (exam.startTime && new Date(exam.startTime) > new Date() && req.user.role !== "ADMIN") {
+    if (exam.startTime && new Date(exam.startTime) > new Date()) {
       const now = new Date();
       const startsInSeconds = Math.max(0, Math.floor((new Date(exam.startTime).getTime() - now.getTime()) / 1000));
       if (req.query.checkOnly === "true") {
@@ -679,7 +678,7 @@ router.get("/:id", authenticateToken, async (req, res) => {
           code: "ATTEMPT_NOT_FOUND",
         });
       }
-      if (specifiedAttempt.userId !== userId && req.user.role !== "ADMIN") {
+      if (specifiedAttempt.userId !== userId) {
         return res.status(403).json({
           message: "Unauthorized: You do not own this examination session.",
           code: "FORBIDDEN",
@@ -874,7 +873,7 @@ router.get("/:id/timer", authenticateToken, async (req, res) => {
           code: "ATTEMPT_NOT_FOUND",
         });
       }
-      if (specifiedAttempt.userId !== userId && req.user.role !== "ADMIN") {
+      if (specifiedAttempt.userId !== userId) {
         return res.status(403).json({
           message: "Unauthorized: You do not own this examination session.",
           code: "FORBIDDEN",
@@ -1372,7 +1371,7 @@ router.get("/:id/incidents", authenticateToken, async (req, res) => {
       if (!specifiedAttempt) {
         return res.status(404).json({ message: "Examination attempt not found." });
       }
-      if (specifiedAttempt.userId !== userId && req.user.role !== "ADMIN") {
+      if (specifiedAttempt.userId !== userId) {
         return res.status(403).json({ message: "Unauthorized: You do not own this examination session." });
       }
       if (specifiedAttempt.examId !== examId) {

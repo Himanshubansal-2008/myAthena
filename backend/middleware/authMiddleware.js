@@ -42,22 +42,10 @@ function authenticateToken(req, res, next) {
   }
 }
 
-function allowRoles(...roles) {
-  return (req, res, next) => {
-    if (!req.user || !roles.includes(req.user.role)) {
-      return res.status(403).json({
-        message: "You do not have permission to access this resource",
-      });
-    }
-
-    next();
-  };
-}
-
 /**
  * Middleware to enforce candidate identity integrity.
  * Never trusts candidate IDs supplied in req.body or req.query.
- * Rejects requests if candidateId/userId in body/query differs from authenticated candidate (unless ADMIN).
+ * Rejects requests if candidateId/userId in body/query differs from authenticated candidate.
  * Binds authenticated userId to request.
  */
 function enforceCandidateIdentity(req, res, next) {
@@ -66,11 +54,10 @@ function enforceCandidateIdentity(req, res, next) {
   }
 
   const authenticatedId = req.user.userId;
-  const isAdmin = req.user.role === "ADMIN";
 
   // Check candidate ID in body
   const bodyCandidateId = req.body?.candidateId || req.body?.userId || req.body?.studentId;
-  if (bodyCandidateId && bodyCandidateId !== authenticatedId && !isAdmin) {
+  if (bodyCandidateId && bodyCandidateId !== authenticatedId) {
     return res.status(403).json({
       message: "Unauthorized: You cannot access or modify records for another candidate.",
       code: "FORBIDDEN",
@@ -79,7 +66,7 @@ function enforceCandidateIdentity(req, res, next) {
 
   // Check candidate ID in query
   const queryCandidateId = req.query?.candidateId || req.query?.userId || req.query?.studentId;
-  if (queryCandidateId && queryCandidateId !== authenticatedId && !isAdmin) {
+  if (queryCandidateId && queryCandidateId !== authenticatedId) {
     return res.status(403).json({
       message: "Unauthorized: You cannot access or modify records for another candidate.",
       code: "FORBIDDEN",
@@ -95,4 +82,4 @@ function enforceCandidateIdentity(req, res, next) {
   next();
 }
 
-module.exports = { authenticateToken, allowRoles, enforceCandidateIdentity, JWT_SECRET };
+module.exports = { authenticateToken, enforceCandidateIdentity, JWT_SECRET };

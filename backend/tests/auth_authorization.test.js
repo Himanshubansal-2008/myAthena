@@ -77,23 +77,19 @@ async function runTests() {
     });
     assert(exam, "Target exam cs-401 must exist in the database");
 
-    // Create an Admin user for role testing
-    const adminEmail = `admin_test_${Date.now()}@athena.internal`;
-    const adminUser = await prisma.user.create({
+    // Create a creator user for test exams
+    const creatorEmail = `creator_test_${Date.now()}@athena.internal`;
+    const creatorUser = await prisma.user.create({
       data: {
-        name: "Admin User",
-        email: adminEmail,
-        passwordHash: await bcrypt.hash("AdminSecret123!", 8),
-        role: "ADMIN",
+        name: "Creator User",
+        email: creatorEmail,
+        passwordHash: await bcrypt.hash("CreatorSecret123!", 8),
+        role: "STUDENT",
       },
     });
-    testUserIds.push(adminUser.id);
-    const adminToken = jwt.sign(
-      { userId: adminUser.id, email: adminUser.email, role: "ADMIN" },
-      JWT_SECRET
-    );
+    testUserIds.push(creatorUser.id);
 
-    // Create a DRAFT exam to test role restrictions
+    // Create a DRAFT exam to test access restrictions
     const draftExam = await prisma.exam.create({
       data: {
         title: "Draft Advanced Systems Exam",
@@ -102,7 +98,7 @@ async function runTests() {
         totalMarks: 50,
         negativeMarking: 0.25,
         status: "DRAFT",
-        creatorId: adminUser.id,
+        creatorId: creatorUser.id,
       },
     });
     testExamIds.push(draftExam.id);
@@ -435,7 +431,7 @@ async function runTests() {
           durationMinutes: 30,
           totalMarks: 20,
           status: "PUBLISHED",
-          creatorId: adminUser.id,
+          creatorId: creatorUser.id,
         },
       });
       testExamIds.push(otherExam.id);
@@ -454,9 +450,9 @@ async function runTests() {
     });
 
     // --------------------------------------------------------------------------
-    // SECTION 4: Role Restrictions & Exam Publication Access Tests
+    // SECTION 4: Exam Publication Access Restrictions Tests
     // --------------------------------------------------------------------------
-    console.log("\n--- Section 4: Role Restrictions & Exam Publication Access Tests ---");
+    console.log("\n--- Section 4: Exam Publication Access Restrictions Tests ---");
 
     await asyncTest("Roles: Student cannot access unpublished/DRAFT exam via GET /api/exams/:id (403)", async () => {
       const { token: studentToken } = await createTestCandidate("student_draft_block");
@@ -471,22 +467,7 @@ async function runTests() {
       assert.strictEqual(res.status, 200);
       assert(Array.isArray(res.data.exams));
       const foundDraft = res.data.exams.find((e) => e.id === draftExam.id);
-      assert.strictEqual(foundDraft, undefined, "Draft exam must NOT appear in student exam list");
-    });
-
-    await asyncTest("Roles: ADMIN can access DRAFT exam via GET /api/exams/:id (200)", async () => {
-      const res = await request(`/exams/${draftExam.id}`, "GET", null, adminToken);
-      assert.strictEqual(res.status, 200);
-      assert.strictEqual(res.data.exam.id, draftExam.id);
-    });
-
-    await asyncTest("Roles: ADMIN can see DRAFT exams in GET /api/exams listing", async () => {
-      const res = await request("/exams", "GET", null, adminToken);
-      assert.strictEqual(res.status, 200);
-      assert(Array.isArray(res.data.exams));
-      const foundDraft = res.data.exams.find((e) => e.id === draftExam.id);
-      assert(foundDraft, "Draft exam MUST appear in admin exam list");
-      assert.strictEqual(foundDraft.status, "DRAFT");
+      assert.strictEqual(foundDraft, undefined, "Draft exam must NOT appear in exam list");
     });
 
     // --------------------------------------------------------------------------
