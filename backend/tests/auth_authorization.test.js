@@ -470,6 +470,15 @@ async function runTests() {
       assert.strictEqual(foundDraft, undefined, "Draft exam must NOT appear in exam list");
     });
 
+    await asyncTest("Roles: Student cannot alter exam schedule via POST /api/exams/:id/schedule (route unexposed / 404)", async () => {
+      const { token: studentToken } = await createTestCandidate("student_schedule_tamper");
+      const res = await request("/exams/cs-401/schedule", "POST", {
+        secondsFromNow: 3600,
+        durationMinutes: 10,
+      }, studentToken);
+      assert.strictEqual(res.status, 404, "Exam scheduling endpoint must not be exposed to students");
+    });
+
     // --------------------------------------------------------------------------
     // SECTION 5: Exam Integrity & Single-Attempt Enforcement Tests
     // --------------------------------------------------------------------------

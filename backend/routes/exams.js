@@ -1633,48 +1633,4 @@ router.post("/:id/submit", authenticateToken, async (req, res) => {
   }
 });
 
-/**
- * POST /api/exams/:id/schedule
- * Set or adjust scheduled start time for an exam (supports secondsFromNow or startTime ISO)
- */
-router.post("/:id/schedule", authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { secondsFromNow, startTime, durationMinutes } = req.body;
-
-    let targetStartTime = null;
-    if (typeof secondsFromNow === "number") {
-      targetStartTime = new Date(Date.now() + secondsFromNow * 1000);
-    } else if (startTime) {
-      targetStartTime = new Date(startTime);
-    }
-
-    const updated = await prisma.exam.update({
-      where: { id },
-      data: {
-        startTime: targetStartTime,
-        status: "PUBLISHED",
-        ...(durationMinutes ? { durationMinutes: Number(durationMinutes) } : {}),
-      },
-    });
-
-    const now = new Date();
-    const startsInSeconds = targetStartTime
-      ? Math.max(0, Math.floor((targetStartTime.getTime() - now.getTime()) / 1000))
-      : 0;
-
-    res.json({
-      message: "Exam schedule successfully updated.",
-      examId: updated.id,
-      title: updated.title,
-      startTime: updated.startTime,
-      startsInSeconds,
-      serverTime: now.toISOString(),
-    });
-  } catch (error) {
-    console.error("Schedule exam error:", error);
-    res.status(500).json({ message: "Failed to update exam schedule." });
-  }
-});
-
 module.exports = router;
