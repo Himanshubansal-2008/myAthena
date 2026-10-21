@@ -2,6 +2,8 @@
   "name": "frontend",
   "private": true,
   "version": "1.0.0",
+  "description": "Athena Desktop Examination & Proctoring Platform",
+  "author": "Athena Team",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -9,7 +11,10 @@
     "dev:electron": "electron .",
     "dev": "concurrently -k -r -s first \"npm:dev:vite\" \"wait-on http://localhost:5180 && npm:dev:electron\"",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "pack": "electron-builder --dir",
+    "package": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder"
   },
   "dependencies": {
     "lucide-react": "^1.58.0",
@@ -23,7 +28,29 @@
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
     "electron": "^29.4.6",
+    "electron-builder": "^26.15.3",
     "vite": "^5.4.14",
     "wait-on": "^8.0.2"
+  },
+  "build": {
+    "appId": "com.athena.examination",
+    "productName": "Athena",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.education"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
   }
 }
