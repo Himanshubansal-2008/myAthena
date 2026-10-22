@@ -534,10 +534,10 @@ export default function ExamInstructions() {
               {alreadySubmitted
                 ? 'This assessment has already been finalized.'
                 : secondsUntilStart > 0
-                ? `Assessment is scheduled for ${new Date(exam.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Button will unlock automatically.`
-                : acknowledged
-                ? 'Ready to proceed with hardware and environment readiness.'
-                : 'Select the acknowledgement checkbox above to enable continuation.'}
+                  ? `Assessment is scheduled for ${new Date(exam.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Button will unlock automatically.`
+                  : acknowledged
+                    ? 'Ready to proceed with hardware and environment readiness.'
+                    : 'Select the acknowledgement checkbox above to enable continuation.'}
             </span>
           </div>
 
@@ -550,10 +550,10 @@ export default function ExamInstructions() {
                 alreadySubmitted
                   ? 'Exam already completed'
                   : secondsUntilStart > 0
-                  ? `Assessment unlocks in ${secondsUntilStart}s`
-                  : acknowledged
-                  ? 'Proceed to System Diagnostics'
-                  : 'Please acknowledge the instructions first'
+                    ? `Assessment unlocks in ${secondsUntilStart}s`
+                    : acknowledged
+                      ? 'Proceed to System Diagnostics'
+                      : 'Please acknowledge the instructions first'
               }
               aria-disabled={!acknowledged || alreadySubmitted || secondsUntilStart > 0}
             >
@@ -561,10 +561,10 @@ export default function ExamInstructions() {
                 {alreadySubmitted
                   ? 'Attempt Already Completed'
                   : secondsUntilStart > 0
-                  ? `Unlocks in ${Math.floor(secondsUntilStart / 60)}m ${secondsUntilStart % 60}s`
-                  : isInProgress
-                  ? 'Proceed to Resume Exam'
-                  : 'Continue to System Check'}
+                    ? `Unlocks in ${Math.floor(secondsUntilStart / 60)}m ${secondsUntilStart % 60}s`
+                    : isInProgress
+                      ? 'Proceed to Resume Exam'
+                      : 'Continue to System Check'}
               </span>
               <ArrowRight size={16} />
             </button>

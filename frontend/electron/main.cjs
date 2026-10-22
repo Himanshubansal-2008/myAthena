@@ -1,6 +1,7 @@
 const { app, BrowserWindow, session, ipcMain } = require('electron');
 const path = require('path');
 
+const iconPath = path.join(__dirname, '../public/app-icon.png');
 let mainWindow = null;
 
 function createWindow() {
@@ -11,6 +12,7 @@ function createWindow() {
     minHeight: 640,
     fullscreenable: true,
     title: 'Athena - Examination & Proctoring Platform',
+    icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -115,6 +117,15 @@ app.whenReady().then(() => {
     session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
       return allowedPermissions.has(permission);
     });
+  }
+
+  // Set macOS Dock Icon in development & runtime
+  if (process.platform === 'darwin' && app.dock) {
+    try {
+      app.dock.setIcon(iconPath);
+    } catch (err) {
+      console.warn('Could not set dock icon:', err);
+    }
   }
 
   createWindow();

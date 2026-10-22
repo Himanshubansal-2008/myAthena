@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Dark glassmorphic background gradient -->
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="50%" stop-color="#090d16" />
+      <stop offset="100%" stop-color="#030712" />
+    </linearGradient>
+
+    <!-- Border highlight -->
+    <linearGradient id="border" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.6" />
+      <stop offset="40%" stop-color="#2563eb" stop-opacity="0.2" />
+      <stop offset="100%" stop-color="#6366f1" stop-opacity="0.4" />
+    </linearGradient>
+
+    <!-- Athena Name gradient -->
+    <linearGradient id="name-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="35%" stop-color="#e0f2fe" />
+      <stop offset="70%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#60a5fa" />
+    </linearGradient>
+
+    <!-- Crest gradient -->
+    <linearGradient id="crest-grad" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="60%" stop-color="#2563eb" />
+      <stop offset="100%" stop-color="#1d4ed8" />
+    </linearGradient>
+
+    <!-- Ambient glow -->
+    <radialGradient id="glow" cx="50%" cy="40%" r="55%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.25" />
+      <stop offset="70%" stop-color="#2563eb" stop-opacity="0.05" />
+      <stop offset="100%" stop-color="#030712" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+
+  <!-- Squircle Base with 100% transparent exterior canvas -->
+  <rect x="36" y="36" width="440" height="440" rx="98" fill="url(#bg)" stroke="url(#border)" stroke-width="2.5" />
+
+  <!-- Ambient light -->
+  <circle cx="256" cy="220" r="170" fill="url(#glow)" />
+
+  <!-- Athena Greek Crest / Helmet Fin Motif (Centered above name) -->
+  <g transform="translate(0, 15)">
+    <!-- Crest Plume -->
+    <path d="M 256 95 C 267 95 276 106 276 120 C 276 132 268 142 260 145 L 260 128 C 260 120 258 108 256 104 C 254 108 252 120 252 128 L 252 145 C 244 142 236 132 236 120 C 236 106 245 95 256 95 Z" fill="url(#crest-grad)" />
+
+    <!-- Sleek Angular Helmet Visor / 'A' Apex -->
+    <path d="M 256 135 L 298 175 L 288 220 L 274 212 L 274 190 L 256 182 L 238 190 L 238 212 L 224 220 L 214 175 Z" fill="url(#crest-grad)" opacity="0.9" />
+
+    <!-- Cyan Visor Slit -->
+    <polygon points="256,182 284,192 256,200 228,192" fill="#38bdf8" />
+    <circle cx="256" cy="191" r="3" fill="#ffffff" />
+  </g>
+
+  <!-- Big Bold ATHENA Name Logotype -->
+  <text x="256" y="318"
+        font-family="system-ui, -apple-system, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif"
+        font-weight="900"
+        font-size="64"
+        letter-spacing="10"
+        text-anchor="middle"
+        fill="url(#name-grad)">ATHENA</text>
+
+  <!-- Tagline Badge -->
+  <g transform="translate(0, 10)">
+    <rect x="136" y="342" width="240" height="30" rx="6" fill="#111c30" stroke="#1e3a5f" stroke-width="1.2" />
+    <text x="256" y="362"
+          font-family="system-ui, -apple-system, 'SF Mono', monospace"
+          font-weight="700"
+          font-size="12"
+          letter-spacing="4"
+          text-anchor="middle"
+          fill="#38bdf8">ASSESSMENT</text>
+  </g>
+
+  <!-- Modern bottom tech accent line -->
+  <rect x="196" y="415" width="120" height="3" rx="1.5" fill="#38bdf8" opacity="0.6" />
+</svg>

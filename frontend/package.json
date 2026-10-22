@@ -41,18 +41,22 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "public/**/*",
       "package.json"
     ],
     "mac": {
       "category": "public.app-category.education",
+      "icon": "public/app-icon.png",
       "target": [
         "dmg"
       ]
     },
     "win": {
+      "icon": "public/app-icon.png",
       "target": "nsis"
     },
     "linux": {
+      "icon": "public/app-icon.png",
       "target": "AppImage"
     }
   }
