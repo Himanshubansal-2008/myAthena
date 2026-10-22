@@ -1,24 +1,36 @@
 # Athena — Institutional Examination & Proctoring Platform
 
-Athena is a secure desktop examination and proctoring platform designed for institutional assessments. Built with **React**, **Vite**, **Electron**, **Express**, and **Prisma (PostgreSQL)**, Athena provides an air-tight, monitored environment for online examinations with real-time proctoring integrity, server-authoritative timer enforcement, automated grading, and comprehensive candidate result audits.
+Athena is an enterprise-grade desktop examination and proctoring platform engineered for secure institutional assessments. Built with **React 18**, **Vite**, **Electron 29**, **Express 5**, and **Prisma (PostgreSQL)**, Athena delivers a locked-down, monitored workstation environment featuring real-time proctoring integrity, server-authoritative timer synchronization, automated multi-format grading, and comprehensive candidate audit trails.
+
+---
+
+> [!TIP]
+> ### 📦 Download Prebuilt Application (.dmg)
+> **You do not need to build from source to test or run Athena!**
+> You can download the ready-to-run macOS `.dmg` installer directly from the [**GitHub Releases**](https://github.com/Himanshubansal-2008/myAthena/releases) section of this repository.
+>
+> 1. Go to the [**Releases**](https://github.com/Himanshubansal-2008/myAthena/releases) tab.
+> 2. Download the latest **`Athena-1.0.0-arm64.dmg`** installer.
+> 3. Open the `.dmg` file, drag **Athena** into your Applications folder, and launch!
+> 4. The application is pre-configured to connect to the cloud-hosted Athena backend out of the box.
 
 > [!NOTE]
-> **Live Server / Cold-Start Notice:**
-> If connecting to a backend instance hosted on Render's free tier: *Please wait a moment — since we are hosted on a free tier, the server may take around 50–90 seconds to wake up for the first request. Thank you for your patience!*
-
+> **Cloud Server Notice (Free Tier Wake-up):**
+> The backend API is hosted on Render's cloud platform. If the server has been idle, the first request may take **50–80 seconds** to spin up. Subsequent requests respond instantly!
 
 ---
 
 ## Table of Contents
 
+- [Prebuilt Downloads (.dmg)](#-download-prebuilt-application-dmg)
 - [Key Features](#key-features)
 - [Architecture & Tech Stack](#architecture--tech-stack)
 - [Project Structure](#project-structure)
 - [Prerequisites](#prerequisites)
 - [Environment Configuration](#environment-configuration)
-- [Installation & Setup](#installation--setup)
+- [Installation & Local Setup](#installation--local-setup)
 - [Running the Application](#running-the-application)
-- [Packaging for Production](#packaging-for-production)
+- [Packaging & Generating .dmg](#packaging--generating-dmg)
 - [Testing](#testing)
 - [Security & Proctoring Specifications](#security--proctoring-specifications)
 - [API Reference](#api-reference)
@@ -27,33 +39,31 @@ Athena is a secure desktop examination and proctoring platform designed for inst
 
 ## Key Features
 
-- **Candidate Authentication & Secure Enrollment**:
-  - JWT-based authentication with bcrypt password hashing.
-  - Candidate registration with validation requiring a minimum 6-character password.
-- **Controlled Desktop Environment**:
-  - Built with Electron featuring a secure IPC bridge (`contextIsolation: true`, `nodeIntegration: false`).
-  - Dual-mode loading: connects to local Vite development server during development, and loads compiled static bundles (`dist/index.html`) when packaged or in production.
-  - Full-screen lock and detection with automated UI synchronization.
-  - Window blur and focus monitoring to detect window/tab switching.
-- **Hardware & Environment Readiness**:
-  - Pre-exam check verifying camera, microphone, fullscreen authorization, and network connectivity before entering an exam.
-- **Live Examination Room**:
-  - Real-time countdown timer synchronized with authoritative server deadlines.
-  - Instant question autosave with review marking (`Mark for Review`).
-  - Question palette with dynamic status tracking (Answered, Unanswered, Marked for Review).
-  - Clean, responsive candidate interface with immediate navigation between questions.
-- **Server-Authoritative Integrity & Grading**:
-  - Single-attempt enforcement per candidate.
-  - PostgreSQL row-level locks (`SELECT ... FOR UPDATE`) preventing race conditions and double submissions.
-  - Automated grading engine supporting question-level marks and negative marking penalties.
-  - Automatic submission when the exam timer expires.
+- **Candidate Authentication & Enrollment**:
+  - Secure JWT authentication with bcrypt-hashed credentials.
+  - Candidate registration enforced with a minimum 6-character password constraint.
+- **Kiosk Desktop Environment (Electron)**:
+  - Hardened IPC context bridge (`contextIsolation: true`, `nodeIntegration: false`).
+  - Automatic fullscreen locking and real-time detection of fullscreen exits.
+  - Window blur and window focus monitoring to track tab-switching or application defocusing.
+- **Pre-Exam Readiness Diagnostics**:
+  - Interactive multi-step hardware readiness check (webcam feed, microphone audio level, fullscreen authorization, and network round-trip latency).
+- **Live Assessment Room**:
+  - Server-synchronized countdown clock resilient against local client clock tampering.
+  - Automatic answer autosave on question selection and option toggling.
+  - "Mark for Review" workflow with interactive question palette.
+  - Automated exam submission on timer expiration.
+- **Server-Authoritative Evaluation & Integrity**:
+  - Strict single-attempt policy per candidate per examination.
+  - PostgreSQL row-level locks (`SELECT ... FOR UPDATE`) preventing race conditions and duplicate submissions.
+  - Multi-question grading engine with positive marks and configurable negative marking penalties.
 - **Proctoring Incident Audit Trail**:
-  - Real-time logging of violations (`WINDOW_BLUR`, `FULLSCREEN_EXIT`, `CAMERA_STOPPED`).
-  - Incident debouncing and tamper-proof server timestamps.
-  - Post-exam incident timeline and summary for proctor evaluation.
-- **Exam History & Detailed Review**:
-  - Candidate past attempt history with authoritative scorecards.
-  - Detailed question-by-question review with candidate choices and correct answers.
+  - Instantaneous recording of proctoring events (`WINDOW_BLUR`, `FULLSCREEN_EXIT`, `CAMERA_OFF`).
+  - Server-side incident debouncing with tamper-proof UTC timestamps.
+  - Detailed post-exam audit logs for institutional proctor review.
+- **Comprehensive Scorecards & Results Review**:
+  - Candidate dashboard with historical submissions and performance benchmarks.
+  - Question-by-question breakdown comparing candidate responses with correct solutions and grading rubrics.
 
 ---
 
@@ -89,7 +99,7 @@ Athena is a secure desktop examination and proctoring platform designed for inst
 +-------------------------------------------------------------+
 ```
 
-### Technologies
+### Technology Breakdown
 
 | Layer | Technologies |
 |---|---|
@@ -97,7 +107,7 @@ Athena is a secure desktop examination and proctoring platform designed for inst
 | **Desktop Shell** | Electron 29, `electron-builder` 26 |
 | **Backend API** | Node.js, Express 5, CORS, JSON Web Tokens (`jsonwebtoken`), `bcryptjs` |
 | **Database & ORM** | PostgreSQL, Prisma ORM 6 |
-| **Testing** | Node.js native test runner & assertions |
+| **Packaging Target** | macOS DMG (`arm64`), Windows NSIS, Linux AppImage |
 
 ---
 
@@ -106,40 +116,44 @@ Athena is a secure desktop examination and proctoring platform designed for inst
 ```
 myAthena/
 ├── backend/
-│   ├── index.js               # Express server entry point & CORS configuration
+│   ├── index.js               # Express server entry & startup auto-seeder
 │   ├── middleware/
-│   │   └── authMiddleware.js  # JWT authentication & identity tamper verification
+│   │   └── authMiddleware.js  # JWT authentication & identity verification
 │   ├── prisma/
-│   │   └── schema.prisma      # PostgreSQL models (User, Exam, Question, Attempt, Result, etc.)
+│   │   └── schema.prisma      # PostgreSQL models (User, Exam, Question, Attempt, etc.)
 │   ├── routes/
-│   │   ├── auth.js            # /api/auth/register, /api/auth/login
-│   │   ├── exams.js           # Exam sessions, autosave, submission, results & incidents
-│   │   └── user.js            # Candidate profile & attempt history
+│   │   ├── auth.js            # /api/auth (Register, Login)
+│   │   ├── exams.js           # /api/exams (Sessions, Autosave, Submit, Incidents)
+│   │   └── user.js            # /api/users (Candidate profile & past attempts)
 │   ├── scripts/
 │   │   └── seed_exams.js      # Database seeder for sample examinations
 │   ├── tests/
-│   │   ├── auth_authorization.test.js # Auth, access control & CORS test suite
-│   │   └── grading.test.js    # Scoring, negative marking & submission test suite
+│   │   ├── auth_authorization.test.js # Access control, spoofing & CORS tests
+│   │   └── grading.test.js    # Automated grading, negative marking tests
 │   └── utils/
 │       └── grading.js         # Core grading calculation logic
 ├── frontend/
 │   ├── electron/
-│   │   ├── main.cjs           # Electron main process (Vite dev server / dist loader)
+│   │   ├── main.cjs           # Electron main process & macOS dock icon
 │   │   └── preload.cjs        # Context bridge exposing electronAPI
+│   ├── public/
+│   │   ├── app-icon.png       # 512x512 transparent Athena app & dock icon
+│   │   └── favicon.svg        # Scalable SVG favicon
 │   ├── src/
 │   │   ├── pages/
-│   │   │   ├── Dashboard.jsx        # Exam portal & past performance
+│   │   │   ├── Dashboard.jsx        # Candidate exam portal & history
 │   │   │   ├── ExamInstructions.jsx # Instructions & technical rules
-│   │   │   ├── ExamReadiness.jsx    # System hardware & permission checks
-│   │   │   ├── ExamResults.jsx      # Authoritative score report & review
+│   │   │   ├── ExamReadiness.jsx    # System hardware & environment checks
+│   │   │   ├── ExamResults.jsx      # Authoritative scorecards & review
 │   │   │   ├── ExamRoom.jsx         # Live exam session & question navigation
 │   │   │   ├── Login.jsx            # Candidate login
 │   │   │   └── Register.jsx         # Candidate registration
-│   │   ├── App.jsx            # Client routes & protected navigation
+│   │   ├── App.jsx            # Routing & protected routes
 │   │   ├── context.jsx        # Auth context & state provider
-│   │   └── index.css          # Core CSS variables & theme tokens
+│   │   └── index.css          # Global design system & theme tokens
+│   ├── index.html             # HTML entry point with relative icon paths
 │   ├── vite.config.js         # Vite configuration with relative base (`./`)
-│   └── package.json           # Frontend dependencies, scripts & electron-builder config
+│   └── package.json           # Scripts & electron-builder packaging configuration
 └── Readme.md                  # Project documentation
 ```
 
@@ -147,17 +161,16 @@ myAthena/
 
 ## Prerequisites
 
-- **Node.js**: `v18.0.0` or higher (Node 20+ recommended)
+If building or running locally:
+- **Node.js**: `v18.0.0` or higher (`v20+` recommended)
 - **npm**: `v9.0.0` or higher
-- **PostgreSQL**: `v14` or higher running locally or accessible via network
+- **PostgreSQL**: `v14` or higher (optional if connecting to hosted cloud backend)
 
 ---
 
 ## Environment Configuration
 
 ### Backend (`backend/.env`)
-
-Create a `.env` file inside the `backend/` directory:
 
 ```env
 PORT=5050
@@ -166,11 +179,20 @@ JWT_SECRET="your-secure-random-jwt-secret-key"
 ALLOWED_ORIGINS="http://localhost:5180"
 ```
 
+### Frontend (`frontend/.env`)
+
+```env
+# Point to hosted cloud backend or your local backend:
+VITE_API_URL="https://athena-api-ailq.onrender.com/api"
+# For local development backend:
+# VITE_API_URL="http://localhost:5050/api"
+```
+
 ---
 
-## Installation & Setup
+## Installation & Local Setup
 
-### 1. Clone Repository & Install Dependencies
+### 1. Clone & Install Dependencies
 
 ```bash
 # Clone the repository
@@ -186,9 +208,7 @@ cd ../frontend
 npm install
 ```
 
-### 2. Database Migration & Seeding
-
-From the `backend/` directory:
+### 2. Database Migration & Seeding (Local Backend)
 
 ```bash
 cd backend
@@ -196,65 +216,83 @@ cd backend
 # Run Prisma migrations
 npx prisma migrate dev --name init
 
-# (Optional) Seed the database with sample exams
-node scripts/seed_exams.js
+# Seed default examinations (also runs automatically on startup if DB is empty)
+npm run seed
 ```
 
 ---
 
 ## Running the Application
 
-### Backend API
+### Option A: Connect to Cloud Backend (Quickest)
 
-- **Hosted Cloud Backend:** `https://athena-api-ailq.onrender.com` (deployed on Render)
-- **Local Backend (optional):**
-  ```bash
-  cd backend
-  npm run dev
-  # Local server starts on http://localhost:5050
-  ```
+The frontend is pre-configured to communicate with the hosted cloud backend (`https://athena-api-ailq.onrender.com/api`). You can start the desktop application immediately:
 
-### Frontend (Vite + Electron)
-
-The frontend is pre-configured to connect to the hosted backend (`https://athena-api-ailq.onrender.com/api`). You can override this anytime by setting `VITE_API_URL` in `frontend/.env`.
-
-Run the frontend in development mode:
 ```bash
 cd frontend
 npm run dev
-# Starts Vite on http://localhost:5180 and automatically launches Electron
+# Starts Vite on http://localhost:5180 and automatically launches the Electron window
 ```
 
-Alternatively, run Vite and Electron individually:
+Alternatively, run Vite and Electron in separate terminals:
 ```bash
+# Terminal 1: Vite Dev Server
 cd frontend
-npm run dev:vite       # Starts Vite dev server on port 5180
-npm run dev:electron   # Launches Electron targeting the local app
+npm run dev:vite
+
+# Terminal 2: Electron Shell
+cd frontend
+npm run dev:electron
+```
+
+### Option B: Run Full Local Stack
+
+```bash
+# Terminal 1: Local Backend Server
+cd backend
+npm run dev
+# Server listens on http://localhost:5050
+
+# Terminal 2: Frontend & Electron
+cd frontend
+npm run dev
 ```
 
 ---
 
-## Packaging for Production
+## Packaging & Generating .dmg
 
-Athena uses `electron-builder` to package the React client and Electron shell into standalone executables. In production, Electron automatically loads the compiled static bundle from `frontend/dist/index.html` via the `file://` protocol.
+Athena uses `electron-builder` to bundle the React application and Electron runtime into native executables.
+
+From the `frontend/` directory:
 
 ```bash
 cd frontend
 
-# Build frontend and package into an unpacked directory (release/)
+# 1. Build the production bundle
+npm run build
+
+# 2. Package into an unpacked local release directory
 npm run package
 
-# Build frontend and generate distributable installers (DMG / NSIS / AppImage)
+# 3. Build standalone macOS .dmg installer (or platform distributables)
 npm run dist
 ```
 
-Packaged outputs are saved to `frontend/release/`.
+To build a macOS `.dmg` specifically:
+```bash
+cd frontend
+npm run build && npx electron-builder --mac dmg
+```
+
+Generated `.dmg` installers and release archives are output to `frontend/release/`:
+- **macOS Installer:** `frontend/release/Athena-1.0.0-arm64.dmg`
 
 ---
 
 ## Testing
 
-The backend includes test suites covering evaluation, scoring calculations, incident recording, authentication, parameter spoofing, and CORS origin policies.
+The backend includes automated test suites covering grading, negative marking calculation, race conditions, authentication, parameter spoofing, and CORS origin policies:
 
 ```bash
 cd backend
@@ -263,26 +301,26 @@ npm test
 
 ### Test Coverage Highlights
 
-- **Grading Unit Tests**: String matching, option index vs. text matching, negative marking calculations, zero-score flooring.
-- **Submission Integration Tests**: Idempotent re-submission, score persistence, answer review authorization.
-- **Proctoring Incident Tests**: `WINDOW_BLUR` and `FULLSCREEN_EXIT` recording, incident debouncing, audit trail retrieval.
-- **Authentication & Authorization**: Protected endpoint rejections, candidate ID spoofing prevention, single-attempt locking, and published exam restrictions.
-- **CORS Tests**: Electron desktop (`null` and `file://`) origins, local Vite frontend, and malicious origin rejections.
+- **Grading Unit Tests**: String normalization, option index vs. text matching, negative marking calculation, score floor at zero.
+- **Submission Tests**: Idempotent re-submission prevention, score persistence, answer review authorization.
+- **Proctoring Incident Tests**: `WINDOW_BLUR` and `FULLSCREEN_EXIT` recording, incident debouncing, audit log retrieval.
+- **Authentication & Security**: Protected route verification, candidate ID spoofing rejection, single-attempt locks.
+- **CORS Policies**: Allows Electron desktop (`file://` and `null`) origins and Vite local development while blocking unauthorized origins.
 
 ---
 
 ## Security & Proctoring Specifications
 
-1. **Password Policy**:
-   - Minimum 6 characters required on candidate enrollment.
-2. **Context Isolation**:
-   - `preload.cjs` exposes only necessary IPC methods through `window.electronAPI`.
+1. **Context Isolation**:
+   - `preload.cjs` exposes strictly typed IPC methods through `window.electronAPI`.
    - Node integration is disabled in renderer windows.
-3. **Session Ownership & Tamper Prevention**:
-   - Every request verifies candidate identity from the JWT payload.
-   - Candidate ID spoofing in request bodies or query params is rejected (`403 Forbidden`).
-4. **Race Condition Prevention**:
-   - PostgreSQL row-level locks prevent concurrent duplicate submissions.
+2. **Tamper Prevention & Identity Check**:
+   - Every request verifies candidate identity from the cryptographically signed JWT payload.
+   - Any attempt to spoof candidate IDs in request bodies or URL parameters is rejected with `403 Forbidden`.
+3. **Single-Attempt Enforcement**:
+   - PostgreSQL row-level locks prevent concurrent duplicate submissions and race conditions.
+4. **Time Tamper Resistance**:
+   - Timers are authoritative and computed on the server based on database start times, immune to candidate system clock changes.
 5. **CORS Whitelisting**:
    - Configured to permit requests originating from Electron desktop applications (`file://`, `null`) and verified development origins.
 
@@ -294,7 +332,7 @@ npm test
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/api/auth/register` | Register a new candidate (name, email, password >= 6 characters) |
+| `POST` | `/api/auth/register` | Register a new candidate (`name`, `email`, `password >= 6`) |
 | `POST` | `/api/auth/login` | Authenticate candidate and receive JWT token |
 
 ### Candidate Profile (`/api/users`)
