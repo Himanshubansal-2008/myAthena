@@ -44,7 +44,10 @@
       "package.json"
     ],
     "mac": {
-      "category": "public.app-category.education"
+      "category": "public.app-category.education",
+      "target": [
+        "dmg"
+      ]
     },
     "win": {
       "target": "nsis"
