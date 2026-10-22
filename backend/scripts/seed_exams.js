@@ -532,11 +532,16 @@ async function seedExams() {
   console.log("Exam seeding successfully completed!");
 }
 
-seedExams()
-  .catch((e) => {
-    console.error("Seed error:", e);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+if (require.main === module) {
+  seedExams()
+    .catch((e) => {
+      console.error("Seed error:", e);
+      process.exit(1);
+    })
+    .finally(async () => {
+      await prisma.$disconnect();
+    });
+}
+
+module.exports = seedExams;
+

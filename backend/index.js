@@ -94,7 +94,17 @@ const PORT = process.env.PORT || 5050;
 
 if (require.main === module) {
   app.listen(PORT, async () => {
-    console.log(`Athena API running on http://localhost:${PORT}`);
+    console.log(`Athena API running`);
+    try {
+      const examCount = await prisma.exam.count();
+      if (examCount === 0) {
+        console.log("No exams found in database. Auto-seeding initial exams...");
+        const seedExams = require("./scripts/seed_exams");
+        await seedExams();
+      }
+    } catch (err) {
+      console.warn("Auto-seed initial verification notice:", err.message);
+    }
   });
 }
 
