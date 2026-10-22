@@ -22,9 +22,10 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import './pages.css';
+import { API_BASE_URL, API_HOST_URL } from '../config';
 
 const OPTION_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
-const API_BASE_URL = 'http://localhost:5050/api';
+
 const MAX_AUTOSAVE_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 1000;
 
@@ -303,7 +304,7 @@ export default function ExamRoom() {
           console.error('Failed to retrieve live examination questions:', err);
           setError({
             message:
-              'Network error while connecting to the assessment backend server. Please verify the backend service is running on http://localhost:5050.',
+              `Network error while connecting to the assessment backend server. Please verify the backend service is reachable at ${API_HOST_URL}.`,
             code: 'NETWORK_ERROR',
           });
         }

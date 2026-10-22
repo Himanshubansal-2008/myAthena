@@ -21,8 +21,8 @@ import {
   HelpCircle,
 } from 'lucide-react';
 import './pages.css';
+import { API_BASE_URL } from '../config';
 
-const API_BASE_URL = 'http://localhost:5050/api';
 
 export default function ExamResults() {
   const { attemptId } = useParams();

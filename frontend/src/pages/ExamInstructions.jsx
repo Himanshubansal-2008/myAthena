@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context.jsx';
+import { API_BASE_URL } from '../config';
 import {
   Shield,
   Clock,
@@ -113,7 +114,7 @@ export default function ExamInstructions() {
       if (!token) return;
       try {
         const examId = exam?.id || 'cs-401';
-        const res = await fetch(`http://localhost:5050/api/exams/${examId}?checkOnly=true`, {
+        const res = await fetch(`${API_BASE_URL}/exams/${examId}?checkOnly=true`, {
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,

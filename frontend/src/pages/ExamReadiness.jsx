@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context.jsx';
+import { API_BASE_URL } from '../config';
 import {
   Shield,
   Camera,
@@ -41,8 +42,8 @@ export default function ExamReadiness() {
     async function checkApiAndAttempt() {
       try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 3500);
-        const res = await fetch('http://localhost:5050/api/health', { signal: controller.signal });
+        const timeout = setTimeout(() => controller.abort(), 7000);
+        const res = await fetch(`${API_BASE_URL}/health`, { signal: controller.signal });
         clearTimeout(timeout);
         if (!isCancelled) {
           setBackendStatus(res.ok ? 'connected' : 'disconnected');
@@ -55,7 +56,7 @@ export default function ExamReadiness() {
 
       if (token) {
         try {
-          const res = await fetch(`http://localhost:5050/api/exams/${examId}?checkOnly=true`, {
+          const res = await fetch(`${API_BASE_URL}/exams/${examId}?checkOnly=true`, {
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${token}`,

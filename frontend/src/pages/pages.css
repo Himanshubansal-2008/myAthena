@@ -88,6 +88,21 @@
   margin-bottom: 20px;
 }
 
+.auth-alert-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  font-size: 12px;
+  color: #93c5fd;
+  margin-bottom: 20px;
+  line-height: 1.45;
+}
+
+
 .input-icon-btn {
   position: absolute;
   right: 12px;

@@ -7,6 +7,7 @@ import {
   EyeOff,
   ArrowRight,
   AlertCircle,
+  Info,
 } from 'lucide-react';
 import './pages.css';
 
@@ -85,6 +86,14 @@ export default function Login() {
               <span>{error}</span>
             </div>
           )}
+
+          {/* Render Free Tier Cold-Start Notice */}
+          <div className="auth-alert-info">
+            <Info size={16} style={{ flexShrink: 0, marginTop: '2px' }} />
+            <span>
+              Please wait a moment — since we are hosted on a free tier, the server may take around 50–90 seconds to wake up for the first request. Thank you for your patience!
+            </span>
+          </div>
 
           {/* Form */}
           <form onSubmit={handleSubmit}>

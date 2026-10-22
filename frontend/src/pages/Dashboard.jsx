@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '../context.jsx';
+import { API_BASE_URL } from '../config';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Shield,
@@ -151,13 +152,13 @@ export default function Dashboard() {
     setResultsError(null);
     try {
       const [resultsRes, examsRes, activeSessionRes] = await Promise.all([
-        fetch('http://localhost:5050/api/exams/results/my-results', {
+        fetch(`${API_BASE_URL}/exams/results/my-results`, {
           headers: { Authorization: `Bearer ${token}` },
         }),
-        fetch('http://localhost:5050/api/exams', {
+        fetch(`${API_BASE_URL}/exams`, {
           headers: { Authorization: `Bearer ${token}` },
         }),
-        fetch('http://localhost:5050/api/exams/session/active', {
+        fetch(`${API_BASE_URL}/exams/session/active`, {
           headers: { Authorization: `Bearer ${token}` },
         }),
       ]);

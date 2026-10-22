@@ -2,6 +2,11 @@
 
 Athena is a secure desktop examination and proctoring platform designed for institutional assessments. Built with **React**, **Vite**, **Electron**, **Express**, and **Prisma (PostgreSQL)**, Athena provides an air-tight, monitored environment for online examinations with real-time proctoring integrity, server-authoritative timer enforcement, automated grading, and comprehensive candidate result audits.
 
+> [!NOTE]
+> **Live Server / Cold-Start Notice:**
+> If connecting to a backend instance hosted on Render's free tier: *Please wait a moment — since we are hosted on a free tier, the server may take around 50–90 seconds to wake up for the first request. Thank you for your patience!*
+
+
 ---
 
 ## Table of Contents
@@ -199,25 +204,28 @@ node scripts/seed_exams.js
 
 ## Running the Application
 
-### Development Mode
+### Backend API
 
-Run the backend and frontend concurrently:
+- **Hosted Cloud Backend:** `https://athena-api-ailq.onrender.com` (deployed on Render)
+- **Local Backend (optional):**
+  ```bash
+  cd backend
+  npm run dev
+  # Local server starts on http://localhost:5050
+  ```
 
-**Terminal 1 — Backend API:**
-```bash
-cd backend
-npm run dev
-# Server starts on http://localhost:5050
-```
+### Frontend (Vite + Electron)
 
-**Terminal 2 — Frontend (Vite + Electron):**
+The frontend is pre-configured to connect to the hosted backend (`https://athena-api-ailq.onrender.com/api`). You can override this anytime by setting `VITE_API_URL` in `frontend/.env`.
+
+Run the frontend in development mode:
 ```bash
 cd frontend
 npm run dev
 # Starts Vite on http://localhost:5180 and automatically launches Electron
 ```
 
-Alternatively, you can run Vite and Electron individually:
+Alternatively, run Vite and Electron individually:
 ```bash
 cd frontend
 npm run dev:vite       # Starts Vite dev server on port 5180
